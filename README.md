@@ -43,11 +43,6 @@
 
 `/play` · `/playlist` · `/skip` · `/stop` · `/pause` · `/resume` · `/queue` · `/nowplaying` · `/volume` · `/settings`
 
-<p align="left">
-  <img src="./assets/YouTube.png" alt="YouTube" width="28" height="28">
-  <img src="./assets/YouTube%20Music.png" alt="YouTube Music" width="28" height="28">
-</p>
-
 - Playback runs through **YouTube only**. Links from Spotify, Apple Music, Deezer, and song.link are automatically resolved to a matching YouTube source.
 - The bot joins the voice channel of whoever issued the command.
 - It automatically leaves when `/stop` is used, or when no human members remain in the channel.
@@ -114,8 +109,8 @@ GUILD_IDS=your_guild_id
 Optional variables you can also set:
 
 - `FFMPEG_PATH` — path to your FFmpeg binary, if it isn't available on the system `PATH`
-- `EMOJI_YOUTUBE` <img src="./assets/YouTube.png" alt="YouTube" width="16" height="16"> — custom emoji used for YouTube sources
-- `EMOJI_YOUTUBE_MUSIC` <img src="./assets/YouTube%20Music.png" alt="YouTube Music" width="16" height="16"> — custom emoji used for YouTube Music sources
+- `EMOJI_YOUTUBE` — custom emoji used for YouTube sources
+- `EMOJI_YOUTUBE_MUSIC` — custom emoji used for YouTube Music sources
 
 ---
 
@@ -173,5 +168,6 @@ This project is licensed under the [MIT License](./LICENSE).
 
 ## Contributors
 
-- [cursoragent](https://github.com/cursoragent) (Cursor Agent)
 - [da0t-exe](https://github.com/da0t-exe)
+- [cursoragent](https://github.com/cursoragent) (Cursor Agent)
+
