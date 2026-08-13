@@ -1,0 +1,10 @@
+bin/
+tmp/
+data/
+node_modules/
+.env
+.netlify/
+*.log
+.DS_Store
+old/
+*-player-script.js
