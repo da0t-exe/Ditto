@@ -2,7 +2,8 @@
 
 Discord bot for voice-channel moderation and music playback.
 
-**GitHub:** [da0t-exe/Ditto](https://github.com/da0t-exe/Ditto)
+**GitHub:** [da0t-exe/Ditto](https://github.com/da0t-exe/Ditto)  
+**License:** [MIT](LICENSE) — Copyright (c) 2026 [cursoragent](https://github.com/cursoragent)
 
 ## Features
 
@@ -86,3 +87,7 @@ src/resolve.js   YouTube / Spotify / Deezer / playlists
 
 - [da0t-exe](https://github.com/da0t-exe)
 - [cursoragent](https://github.com/cursoragent) (Cursor Agent)
+
+## License
+
+[MIT](LICENSE) © 2026 [cursoragent](https://github.com/cursoragent)
