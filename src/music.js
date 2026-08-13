@@ -34,9 +34,8 @@ const {
 
 /**
  * Custom Discord emojis for YouTube / YouTube Music.
- * Upload assets/emojis/youtube.png as `youtube`
- * and assets/emojis/youtube-music.png as `youtubemusic` on the server.
- * Optional .env: EMOJI_YOUTUBE=<:youtube:ID>  EMOJI_YOUTUBE_MUSIC=<:youtubemusic:ID>
+ * Upload server emojis named `youtube` and `youtubemusic`,
+ * or set EMOJI_YOUTUBE / EMOJI_YOUTUBE_MUSIC in .env (e.g. <:youtube:ID>).
  */
 
 let activeGuild = null;
