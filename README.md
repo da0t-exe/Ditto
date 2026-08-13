@@ -1,108 +1,88 @@
-# Sticky Move Bot
+# Ditto
 
-Bot Discord qui permet de :
-- **`/move`** — déplacer tous les membres d'un salon vocal vers un autre
-- **`/stick` / `/unstick` / `/stick-status`** — verrouiller un salon vocal
-- **Musique** : `/play`, `/skip`, `/stop`, `/pause`, `/resume`, `/queue`, `/nowplaying`, `/volume`, `/settings`
+Discord bot for voice-channel moderation and music playback.
 
-> ⚠️ Limite technique Discord : un bot peut **déplacer** quelqu'un déjà connecté en vocal vers un autre salon, mais il ne peut **jamais forcer quelqu'un à rejoindre un vocal** s'il s'est complètement déconnecté.
+**GitHub:** [da0t-exe/Ditto](https://github.com/da0t-exe/Ditto)
 
-### Musique (Pterodactyl)
+## Features
 
-- L'egg / l'image doit avoir **FFmpeg** (la plupart des eggs Discord Node l'ont). Sinon définis `FFMPEG_PATH`.
-- Permissions bot : **Connect**, **Speak**, **Move Members**, **View Channels**
-- `/play` accepte YouTube, YouTube Music, Spotify / Apple Music / Deezer (résolus vers YouTube Music), ou une recherche texte
-- Le bot quitte le vocal sur `/stop` ou s'il ne reste plus personne en vocal
+### Voice
+- **`/move`** — move every member from one voice channel to another
+- **`/stick` / `/unstick` / `/stick-status`** — lock a voice channel; members who leave are pulled back
+- **`/wake-up`** — bounce a user through random voice channels, then drop them in a destination
+- **`/dm-all`** — DM members of this server (Administrator only, max 100, 24h cooldown)
 
----
+Discord can move someone who is already in voice. It cannot force a disconnected user to join a voice channel.
 
-## 1. Prérequis
+### Music
+`/play` `/playlist` `/skip` `/stop` `/pause` `/resume` `/queue` `/nowplaying` `/volume` `/settings`
 
-- [Node.js](https://nodejs.org/) version 18 ou plus (vérifie avec `node -v`)
-- Un compte Discord avec les droits administrateur sur ton serveur
+- Playback is **YouTube only**. Spotify, Apple Music, Deezer, and song.link links are resolved to YouTube.
+- The bot joins the requester’s voice channel.
+- It leaves on `/stop`, or when no humans remain in the channel.
+- Skip/stop: the current track requester skips instantly; otherwise a majority vote in the bot’s voice channel.
 
----
+Music commands are public. `/settings` and voice-moderation commands need **Move Members**.
 
-## 2. Créer l'application Discord et le bot
+## Requirements
 
-1. Va sur https://discord.com/developers/applications
-2. Clique **New Application**, donne-lui un nom (ex: `StickyMoveBot`)
-3. Dans le menu de gauche, va dans **Bot**
-4. Clique **Reset Token** (ou **Add Bot**), puis **Copy** pour récupérer le **token** → garde-le secret, c'est le mot de passe du bot
-5. Toujours dans l'onglet **Bot**, active les intents nécessaires (scroll en bas) :
-   - **Server Members Intent** → pas obligatoire ici mais utile
-   - **Voice States** sont inclus par défaut dans les intents non privilégiés, rien à activer de spécial pour ça
-6. Va dans l'onglet **OAuth2 → URL Generator** :
-   - Coche **`bot`** et **`applications.commands`**
-   - Dans "Bot Permissions", coche : **Move Members**, **View Channels**, **Connect**
-   - Copie l'URL générée en bas, colle-la dans ton navigateur, choisis ton serveur et invite le bot
+- [Node.js](https://nodejs.org/) 18+
+- A Discord application with the bot invited to your server
+- **FFmpeg** on the host (Pterodactyl Discord eggs usually include it). Otherwise set `FFMPEG_PATH`.
 
-7. Récupère aussi :
-   - Le **Client ID** (onglet **General Information** → "Application ID")
-   - L'**ID de ton serveur** (dans Discord, active le mode développeur : `Réglages utilisateur → Avancé → Mode développeur`, puis clic droit sur l'icône du serveur → "Copier l'ID du serveur")
+Bot permissions: **Connect**, **Speak**, **Move Members**, **View Channels**, **Send Messages**.
 
----
+Privileged intents: **Server Members**, **Voice States**.
 
-## 3. Installer le projet
+## Setup
 
-Récupère les fichiers du dossier `sticky-move-bot` fourni, puis dans un terminal :
+1. Create an application at [Discord Developer Portal](https://discord.com/developers/applications) named **Ditto**.
+2. Bot tab → reset/copy the token. Enable **Server Members Intent**.
+3. OAuth2 → URL Generator → scopes `bot` and `applications.commands` → invite the bot.
+4. Copy the **Application ID** (`CLIENT_ID`) and your server ID (`GUILD_IDS`).
 
 ```bash
-cd sticky-move-bot
 npm install
+cp .env.example .env
 ```
-
-Renomme `.env.example` en `.env` et remplis-le :
 
 ```env
-BOT_TOKEN=le_token_copié_à_l_étape_2
-CLIENT_ID=le_client_id_copié_à_l_étape_2
-GUILD_ID=l_id_de_ton_serveur
+BOT_TOKEN=your_bot_token
+CLIENT_ID=your_application_id
+GUILD_IDS=your_guild_id
 ```
 
----
+Optional: `FFMPEG_PATH`, `EMOJI_YOUTUBE`, `EMOJI_YOUTUBE_MUSIC`.
 
-## 4. Enregistrer les commandes slash
+## Run
 
-Cette étape n'est à faire qu'une fois (ou à chaque fois que tu modifies les commandes) :
+Register slash commands once (or after you change them):
 
 ```bash
 npm run deploy
 ```
 
-Tu dois voir `Commandes enregistrees avec succes.`
-
----
-
-## 5. Lancer le bot
+Start the bot:
 
 ```bash
 npm start
 ```
 
-Tu dois voir `Connecte en tant que StickyMoveBot#XXXX`. Le bot est en ligne tant que ce terminal reste ouvert.
+You should see `Logged in as Ditto#XXXX` and `engine=yt-dlp-pipe+ffmpeg-pcm`.
 
----
+On **Pterodactyl**, the start command must stay `npm start`. `npm run deploy` registers commands and exits 0, which the panel treats as a crash — run deploy, then Start again.
 
-## 6. Utilisation
+## Project layout
 
-- `/move source:#Salon-A destination:#Salon-B` → déplace tout le monde de A vers B, une seule fois.
-- `/stick salon:#Salon-A` → verrouille le salon A. Tous ceux qui y sont déjà + tous ceux qui le rejoignent ensuite seront ramenés automatiquement s'ils tentent de partir dans un autre salon vocal.
-- `/unstick salon:#Salon-A` → désactive le verrouillage.
-- `/stick-status` → liste les salons verrouillés et combien de membres sont suivis.
-
-Seuls les membres ayant la permission Discord **"Déplacer des membres"** peuvent utiliser ces commandes.
-
----
-
-## 7. Garder le bot en ligne 24/7 (optionnel)
-
-Pour l'instant le bot tourne uniquement pendant que ton terminal est ouvert. Pour le faire tourner en continu sur ta machine, tu peux utiliser [PM2](https://pm2.keymetrics.io/) :
-
-```bash
-npm install -g pm2
-pm2 start src/index.js --name sticky-move-bot
-pm2 save
+```
+src/index.js     Bot, /move, /stick, /wake-up, /dm-all
+src/deploy.js    Slash command registration
+src/music.js     Music commands, embeds, settings
+src/player.js    yt-dlp + FFmpeg playback
+src/resolve.js   YouTube / Spotify / Deezer / playlists
 ```
 
-Pour l'héberger en permanence sans garder ton PC allumé, il faudra le déployer sur un petit serveur (VPS) ou une machine dédiée — dis-moi si tu veux un tuto pour ça aussi.
+## Contributors
+
+- [da0t-exe](https://github.com/da0t-exe)
+- [cursoragent](https://github.com/cursoragent) (Cursor Agent)

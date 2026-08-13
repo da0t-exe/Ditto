@@ -406,12 +406,12 @@ client.on('interactionCreate', async (interaction) => {
   // Unhandled slash (e.g. /playlist registered but old bot files on host)
   console.warn(`[bot] unhandled command: /${commandName}`);
   return interaction.reply({
-    content: `Command \`/${commandName}\` is registered but not handled by this bot version. Upload the latest \`src/music/\` files and restart.`,
+    content: `Command \`/${commandName}\` is registered but not handled by this bot version. Upload the latest src files and restart.`,
     ephemeral: true,
   }).catch(() => {});
 });
 
-// ---------- Sticky behavior ----------
+// ---------- Voice lock (/stick) ----------
 client.on('voiceStateUpdate', async (oldState, newState) => {
   // Music: leave when no humans remain in the bot's voice channel
   if (oldState.channelId && oldState.channelId !== newState.channelId && oldState.guild) {

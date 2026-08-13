@@ -62,7 +62,7 @@ function detectUrlKind(input) {
 
 async function fetchJson(url) {
   const res = await fetch(url, {
-    headers: { 'User-Agent': 'StickyMoveBot/1.0' },
+    headers: { 'User-Agent': 'Ditto/1.0' },
   });
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
   return res.json();
@@ -70,7 +70,7 @@ async function fetchJson(url) {
 
 async function fetchText(url) {
   const res = await fetch(url, {
-    headers: { 'User-Agent': 'StickyMoveBot/1.0' },
+    headers: { 'User-Agent': 'Ditto/1.0' },
   });
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
   return res.text();
@@ -880,7 +880,7 @@ async function hydrateYoutubeMeta(track, timeoutMs = 800) {
       `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`,
       {
         signal: ctrl.signal,
-        headers: { 'User-Agent': 'StickyMoveBot/1.0' },
+        headers: { 'User-Agent': 'Ditto/1.0' },
       }
     );
     if (!res.ok) return track;
@@ -1219,7 +1219,7 @@ async function spotifyApi(path, token) {
   const res = await fetch(`https://api.spotify.com/v1${path}`, {
     headers: {
       Authorization: `Bearer ${token}`,
-      'User-Agent': 'StickyMoveBot/1.0',
+      'User-Agent': 'Ditto/1.0',
     },
   });
   if (!res.ok) {

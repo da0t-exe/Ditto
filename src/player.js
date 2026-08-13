@@ -131,7 +131,7 @@ function followDownload(url, dest) {
     const req = mod.get(
       url,
       {
-        headers: { 'User-Agent': 'StickyMoveBot/1.0' },
+        headers: { 'User-Agent': 'Ditto/1.0' },
         timeout: 120000,
       },
       (res) => {
@@ -603,7 +603,7 @@ async function fetchJsonTimeout(url, ms = META_TIMEOUT_MS) {
   const t = setTimeout(() => ctrl.abort(), ms);
   try {
     const res = await fetch(url, {
-      headers: { 'User-Agent': 'StickyMoveBot/1.0' },
+      headers: { 'User-Agent': 'Ditto/1.0' },
       signal: ctrl.signal,
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
