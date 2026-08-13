@@ -1,49 +1,107 @@
-# Ditto
+<p align="center">
+  <img src="./assets/Ditto.jpg" alt="Ditto avatar" width="160" height="160">
+</p>
 
-Discord bot for voice-channel moderation and music playback.
+<h1 align="center">Ditto</h1>
 
-**GitHub:** [da0t-exe/Ditto](https://github.com/da0t-exe/Ditto)  
-**License:** [MIT](LICENSE) — Copyright (c) 2026 [cursoragent](https://github.com/cursoragent)
+<p align="center">
+  A Discord bot for voice-channel moderation and music playback.
+</p>
+
+---
+
+## Table of Contents
+
+- [Features](#features)
+  - [Voice Moderation](#voice-moderation)
+  - [Music](#music)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Running the Bot](#running-the-bot)
+- [Project Layout](#project-layout)
+- [Deploying on Pterodactyl](#deploying-on-pterodactyl)
+- [License](#license)
+- [Contributors](#contributors)
+
+---
 
 ## Features
 
-### Voice
-- **`/move`** — move every member from one voice channel to another
-- **`/stick` / `/unstick` / `/stick-status`** — lock a voice channel; members who leave are pulled back
-- **`/wake-up`** — bounce a user through random voice channels, then drop them in a destination
-- **`/dm-all`** — DM members of this server (Administrator only, max 100, 24h cooldown)
+### Voice Moderation
 
-Discord can move someone who is already in voice. It cannot force a disconnected user to join a voice channel.
+| Command | Description |
+|---|---|
+| `/move` | Move every member from one voice channel to another. |
+| `/stick` / `/unstick` / `/stick-status` | Lock a voice channel — members who try to leave are automatically pulled back in. |
+| `/wake-up` | Bounce a user through a series of random voice channels before dropping them in a final destination. |
+| `/dm-all` | DM every member of the server. Administrator only, capped at 100 recipients, with a 24-hour cooldown. |
+
+> **Note:** Discord's API lets a bot move a member who is *already* connected to voice, but it cannot force a disconnected user to join a voice channel.
 
 ### Music
-`/play` `/playlist` `/skip` `/stop` `/pause` `/resume` `/queue` `/nowplaying` `/volume` `/settings`
 
-- Playback is **YouTube only**. Spotify, Apple Music, Deezer, and song.link links are resolved to YouTube.
-- The bot joins the requester’s voice channel.
-- It leaves on `/stop`, or when no humans remain in the channel.
-- Skip/stop: the current track requester skips instantly; otherwise a majority vote in the bot’s voice channel.
+`/play` · `/playlist` · `/skip` · `/stop` · `/pause` · `/resume` · `/queue` · `/nowplaying` · `/volume` · `/settings`
 
-Music commands are public. `/settings` and voice-moderation commands need **Move Members**.
+<p align="left">
+  <img src="./assets/YouTube.png" alt="YouTube" width="28" height="28">
+  <img src="./assets/YouTube%20Music.png" alt="YouTube Music" width="28" height="28">
+</p>
+
+- Playback runs through **YouTube only**. Links from Spotify, Apple Music, Deezer, and song.link are automatically resolved to a matching YouTube source.
+- The bot joins the voice channel of whoever issued the command.
+- It automatically leaves when `/stop` is used, or when no human members remain in the channel.
+- Skipping works two ways: the person who requested the current track can skip instantly, otherwise a majority vote among listeners in the bot's channel is required.
+
+Music commands are available to everyone. Voice-moderation commands and `/settings` require the **Move Members** permission.
+
+---
 
 ## Requirements
 
-- [Node.js](https://nodejs.org/) 18+
-- A Discord application with the bot invited to your server
-- **FFmpeg** on the host (Pterodactyl Discord eggs usually include it). Otherwise set `FFMPEG_PATH`.
+Make sure you have the following before installing:
 
-Bot permissions: **Connect**, **Speak**, **Move Members**, **View Channels**, **Send Messages**.
+- **[Node.js](https://nodejs.org/)** version 18 or later
+- A **Discord application** with the bot already invited to your server
+- **FFmpeg** installed on the host machine (most Pterodactyl Discord bot eggs already include it — otherwise, point to your binary with the `FFMPEG_PATH` environment variable)
 
-Privileged intents: **Server Members**, **Voice States**.
+The bot also needs the following **permissions** when invited:
+`Connect`, `Speak`, `Move Members`, `View Channels`, `Send Messages`
 
-## Setup
+And these **privileged intents** enabled in the Developer Portal:
+`Server Members Intent`, `Voice States`
 
-1. Create an application at [Discord Developer Portal](https://discord.com/developers/applications) named **Ditto**.
-2. Bot tab → reset/copy the token. Enable **Server Members Intent**.
-3. OAuth2 → URL Generator → scopes `bot` and `applications.commands` → invite the bot.
-4. Copy the **Application ID** (`CLIENT_ID`) and your server ID (`GUILD_IDS`).
+---
+
+## Installation
+
+### 1. Create your Discord application
+
+1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) and create a new application named **Ditto** (or whatever you'd like to call it).
+2. Open the **Bot** tab, reset and copy the bot **token**, then enable **Server Members Intent**.
+3. Open **OAuth2 → URL Generator**, select the `bot` and `applications.commands` scopes, choose the permissions listed above, and use the generated link to invite the bot to your server.
+4. Copy your application's **Application ID** (this will be `CLIENT_ID`) and your **server (guild) ID** (this will be `GUILD_IDS`).
+
+### 2. Clone the repository
+
+```bash
+git clone https://github.com/da0t-exe/Ditto.git
+cd Ditto
+```
+
+### 3. Install dependencies
 
 ```bash
 npm install
+```
+
+---
+
+## Configuration
+
+Copy the example environment file and fill it in with your own values:
+
+```bash
 cp .env.example .env
 ```
 
@@ -53,41 +111,67 @@ CLIENT_ID=your_application_id
 GUILD_IDS=your_guild_id
 ```
 
-Optional: `FFMPEG_PATH`, `EMOJI_YOUTUBE`, `EMOJI_YOUTUBE_MUSIC`.
+Optional variables you can also set:
 
-## Run
+- `FFMPEG_PATH` — path to your FFmpeg binary, if it isn't available on the system `PATH`
+- `EMOJI_YOUTUBE` <img src="./assets/YouTube.png" alt="YouTube" width="16" height="16"> — custom emoji used for YouTube sources
+- `EMOJI_YOUTUBE_MUSIC` <img src="./assets/YouTube%20Music.png" alt="YouTube Music" width="16" height="16"> — custom emoji used for YouTube Music sources
 
-Register slash commands once (or after you change them):
+---
+
+## Running the Bot
+
+**Step 1 — Register the slash commands.** This only needs to be run once, or again whenever you add/change a command:
 
 ```bash
 npm run deploy
 ```
 
-Start the bot:
+**Step 2 — Start the bot:**
 
 ```bash
 npm start
 ```
 
-You should see `Logged in as Ditto#XXXX` and `engine=yt-dlp-pipe+ffmpeg-pcm`.
-
-On **Pterodactyl**, the start command must stay `npm start`. `npm run deploy` registers commands and exits 0, which the panel treats as a crash — run deploy, then Start again.
-
-## Project layout
+If everything is configured correctly, you should see something like:
 
 ```
-src/index.js     Bot, /move, /stick, /wake-up, /dm-all
+Logged in as YourBotName#XXXX
+engine=yt-dlp-pipe+ffmpeg-pcm
+```
+
+> The bot's display name comes from whatever you named your application in the Discord Developer Portal — it doesn't have to be "Ditto". Rename it there, and it'll show up under your chosen name instead.
+
+---
+
+## Project Layout
+
+```
+src/index.js     Bot client, /move, /stick, /wake-up, /dm-all
 src/deploy.js    Slash command registration
-src/music.js     Music commands, embeds, settings
-src/player.js    yt-dlp + FFmpeg playback
-src/resolve.js   YouTube / Spotify / Deezer / playlists
+src/music.js     Music commands, embeds, and settings
+src/player.js    yt-dlp + FFmpeg playback engine
+src/resolve.js   YouTube / Spotify / Deezer link and playlist resolution
 ```
 
-## Contributors
+---
 
-- [da0t-exe](https://github.com/da0t-exe)
-- [cursoragent](https://github.com/cursoragent) (Cursor Agent)
+## Deploying on Pterodactyl
+
+If you're hosting Ditto on a **Pterodactyl** panel:
+
+- Keep the panel's **start command** set to `npm start`.
+- `npm run deploy` registers the slash commands and then exits with code 0 — Pterodactyl interprets that clean exit as a crash. Run `npm run deploy` manually from the console, then start the server normally with `npm start`.
+
+---
 
 ## License
 
-[MIT](LICENSE) © 2026 [cursoragent](https://github.com/cursoragent)
+This project is licensed under the [MIT License](./LICENSE).
+
+---
+
+## Contributors
+
+- [cursoragent](https://github.com/cursoragent) (Cursor Agent)
+- [da0t-exe](https://github.com/da0t-exe)
