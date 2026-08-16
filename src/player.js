@@ -210,20 +210,16 @@ async function getYtDlp() {
 }
 
 /**
- * YouTube 2026: without a JS runtime, yt-dlp only uses android_vr and many
- * videos (kids / Disney / some Music) return "This video is not available".
- * Node is always present on Pterodactyl. Prefer web_safari/tv/mweb.
+ * YouTube changes player clients often. Forcing tv/web_safari made yt-dlp exit 1
+ * with no audio. Let current yt-dlp pick defaults (needs Node for n-sig / EJS),
+ * then retry a fallback set that still works without cookies.
  */
-function youtubeCompatArgs() {
-  return [
-    '--js-runtimes',
-    'node',
-    '--extractor-args',
-    'youtube:player_client=web_safari,tv,mweb,android_vr',
-    '--user-agent',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-    '--geo-bypass',
-  ];
+function youtubeCompatArgs(profile = 'default') {
+  const clients =
+    profile === 'fallback'
+      ? 'youtube:player_client=tv_downgraded,ios,android_vr,web_embedded'
+      : 'youtube:player_client=default';
+  return ['--js-runtimes', 'node', '--extractor-args', clients, '--geo-bypass'];
 }
 
 function canonicalWatchUrl(watchUrl) {
@@ -441,8 +437,13 @@ function prefetchStream(watchUrl) {
 async function updateYtDlp() {
   try {
     const bin = await getYtDlp();
-    await runYtDlp(bin, ['-U'], { allowNonZero: true, timeoutMs: 90_000 });
-    console.log('[music] yt-dlp self-update done');
+    try {
+      await runYtDlp(bin, ['--update-to', 'nightly'], { allowNonZero: true, timeoutMs: 90_000 });
+      console.log('[music] yt-dlp updated to nightly');
+    } catch (_) {
+      await runYtDlp(bin, ['-U'], { allowNonZero: true, timeoutMs: 90_000 });
+      console.log('[music] yt-dlp self-update done');
+    }
   } catch (err) {
     console.warn('[music] yt-dlp -U skipped:', err.message.slice(0, 160));
   }
@@ -938,6 +939,21 @@ function createFfmpegPcmResource(inputUrl, guildMusic) {
  * before starting FFmpeg (never open an empty pipe).
  */
 function createPipedYtDlpResource(watchUrl, guildMusic, ytdlpBin) {
+  return (async () => {
+    let lastErr;
+    for (const profile of ['default', 'fallback']) {
+      try {
+        return await pipeYtDlpOnce(watchUrl, guildMusic, ytdlpBin, profile);
+      } catch (err) {
+        lastErr = err;
+        console.warn(`[music] yt-dlp pipe ${profile} failed: ${String(err.message || err).slice(0, 280)}`);
+      }
+    }
+    throw lastErr || new Error('yt-dlp produced no audio data');
+  })();
+}
+
+function pipeYtDlpOnce(watchUrl, guildMusic, ytdlpBin, profile) {
   return new Promise((resolve, reject) => {
     const ffmpegBin = getFfmpegPath() || 'ffmpeg';
     const ytdlpArgs = [
@@ -954,13 +970,13 @@ function createPipedYtDlpResource(watchUrl, guildMusic, ytdlpBin) {
       '15',
       '--buffer-size',
       '64K',
-      ...youtubeCompatArgs(),
+      ...youtubeCompatArgs(profile),
       '-o',
       '-',
       watchUrl,
     ];
 
-    console.log(`[music] ffmpeg PCM via yt-dlp pipe (${ffmpegBin})`);
+    console.log(`[music] ffmpeg PCM via yt-dlp pipe (${ffmpegBin}) client=${profile}`);
     const ytdlp = spawn(ytdlpBin, ytdlpArgs, {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
@@ -1006,7 +1022,7 @@ function createPipedYtDlpResource(watchUrl, guildMusic, ytdlpBin) {
       try {
         ytdlp.kill('SIGKILL');
       } catch (_) {}
-      const hint = ytdlpErr.text.replace(/\s+/g, ' ').trim().slice(0, 300);
+      const hint = ytdlpErr.text.replace(/\s+/g, ' ').trim().slice(0, 800);
       reject(hint ? new Error(`${err.message} (${hint})`) : err);
     }
 
