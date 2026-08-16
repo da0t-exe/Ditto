@@ -41,14 +41,15 @@
 
 ### Music
 
-`/play` · `/playlist` · `/skip` · `/stop` · `/pause` · `/resume` · `/queue` · `/nowplaying` · `/volume` · `/settings`
+`/play` · `/playlist` · `/skip` · `/stop` · `/pause` · `/resume` · `/queue` · `/nowplaying` · `/volume` · `/settings` · `/sudo`
 
 - Playback runs through **YouTube only**. Links from Spotify, Apple Music, Deezer, and song.link are automatically resolved to a matching YouTube source.
 - The bot joins the voice channel of whoever issued the command.
 - It automatically leaves when `/stop` is used, or when no human members remain in the channel.
 - Skipping works two ways: the person who requested the current track can skip instantly, otherwise a majority vote among listeners in the bot's channel is required.
+- `/sudo` (Administrator only) overrides the last denied music command in that channel (for example a skip/stop vote, or “you must be in a voice channel”). It does nothing if there is nothing to override. Use the normal music commands first; `/sudo` is not a replacement for `/play` or `/skip`.
 
-Music commands are available to everyone. Voice-moderation commands and `/settings` require the **Move Members** permission.
+Music commands are available to everyone. Voice-moderation commands and `/settings` require the **Move Members** permission. `/sudo` requires the **Administrator** permission.
 
 ---
 
@@ -155,8 +156,9 @@ src/resolve.js   YouTube / Spotify / Deezer link and playlist resolution
 
 If you're hosting Ditto on a **Pterodactyl** panel:
 
-- Keep the panel's **start command** set to `npm start`.
-- `npm run deploy` registers the slash commands and then exits with code 0 — Pterodactyl interprets that clean exit as a crash. Run `npm run deploy` manually from the console, then start the server normally with `npm start`.
+- Keep the panel's **start command** set to `npm start` only. Do not put `git`, `npm install`, or `npm run deploy` in the startup command.
+- `npm run deploy` registers the slash commands and then exits with code 0 — Pterodactyl interprets that clean exit as a crash. Run `npm run deploy` once (temporarily as the start command, or from the console), then set startup back to `npm start`.
+- To update from GitHub, run `git fetch origin && git reset --hard origin/main` **once**, then start with `npm start`.
 
 ---
 
