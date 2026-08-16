@@ -533,6 +533,30 @@ async function handleSettingsSelect(interaction) {
 
 
 
+const SUDO_TTL_MS = 3 * 60 * 1000;
+const pendingSudo = new Map();
+
+function sudoKey(interaction) {
+  return `${interaction.guildId}:${interaction.channelId}`;
+}
+
+function rememberSudo(interaction, payload) {
+  pendingSudo.set(sudoKey(interaction), {
+    ...payload,
+    userId: interaction.user.id,
+    at: Date.now(),
+  });
+}
+
+function takeSudo(interaction) {
+  const key = sudoKey(interaction);
+  const pending = pendingSudo.get(key);
+  if (!pending) return null;
+  pendingSudo.delete(key);
+  if (Date.now() - pending.at > SUDO_TTL_MS) return null;
+  return pending;
+}
+
 function requireVoice(interaction) {
   const channel = interaction.member?.voice?.channel;
   if (!channel) {
@@ -648,9 +672,128 @@ async function playResolved(interaction, channel, resolved) {
   });
 }
 
+function sudoVoiceChannel(interaction, pending) {
+  const adminVc = interaction.member?.voice?.channel;
+  if (adminVc) return adminVc;
+  const music = getGuildMusic(interaction.guildId);
+  const botChId = music.connection?.joinConfig?.channelId;
+  if (botChId) {
+    const ch = interaction.guild?.channels.cache.get(botChId);
+    if (ch?.isVoiceBased()) return ch;
+  }
+  const original = interaction.guild?.members.cache.get(pending.userId);
+  return original?.voice?.channel || null;
+}
+
+async function handleSudoCommand(interaction) {
+  if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.Administrator)) {
+    await interaction.reply({
+      content: "You don't have the Administrator permission to use /sudo.",
+      ephemeral: true,
+    });
+    return true;
+  }
+
+  const pending = takeSudo(interaction);
+  if (!pending) {
+    await interaction.reply({
+      content: 'Nothing to override in this channel (no recent denied music command).',
+      ephemeral: true,
+    });
+    return true;
+  }
+
+  const music = getGuildMusic(interaction.guildId);
+  console.log(`[music] /sudo overrides /${pending.command} (from <@${pending.userId}>)`);
+
+  if (pending.command === 'skip') {
+    if (!music.current) {
+      await interaction.reply({ embeds: [errorEmbed('Nothing is playing.')], ephemeral: true });
+      return true;
+    }
+    const { skipped, next } = music.skip();
+    await interaction.reply({ embeds: [skippedEmbed(skipped, next)] });
+    return true;
+  }
+
+  if (pending.command === 'stop') {
+    music.stop();
+    await interaction.reply({ embeds: [stoppedEmbed()] });
+    return true;
+  }
+
+  if (pending.command === 'pause') {
+    if (!music.current) {
+      await interaction.reply({ embeds: [errorEmbed('Nothing is playing.')], ephemeral: true });
+      return true;
+    }
+    if (!music.pause()) {
+      await interaction.reply({ embeds: [errorEmbed('Already paused or not playing.')], ephemeral: true });
+      return true;
+    }
+    await interaction.reply({ embeds: [pausedEmbed(music.current)] });
+    return true;
+  }
+
+  if (pending.command === 'resume') {
+    if (!music.current) {
+      await interaction.reply({ embeds: [errorEmbed('Nothing is playing.')], ephemeral: true });
+      return true;
+    }
+    if (!music.resume()) {
+      await interaction.reply({ embeds: [errorEmbed('Nothing is paused.')], ephemeral: true });
+      return true;
+    }
+    await interaction.reply({ embeds: [resumedEmbed(music.current)] });
+    return true;
+  }
+
+  if (pending.command === 'volume') {
+    const vol = music.setVolume(pending.level ?? 50);
+    await interaction.reply({ embeds: [volumeEmbed(vol)] });
+    return true;
+  }
+
+  if (pending.command === 'play' || pending.command === 'playlist') {
+    const channel = sudoVoiceChannel(interaction, pending);
+    if (!channel) {
+      await interaction.reply({
+        embeds: [errorEmbed('Need a voice channel to override that play command.')],
+        ephemeral: true,
+      });
+      return true;
+    }
+    try {
+      await interaction.deferReply();
+    } catch (err) {
+      console.error('[music] /sudo defer failed:', err.message);
+      return true;
+    }
+    try {
+      const mode = pending.command === 'playlist' ? 'playlist' : 'track';
+      const resolved = await resolvePlayInput(pending.query, { mode });
+      await playResolved(interaction, channel, resolved);
+    } catch (err) {
+      const msg = err.message || 'Failed to play that.';
+      await interaction.editReply({ embeds: [errorEmbed(msg)] }).catch(() => {});
+    }
+    return true;
+  }
+
+  await interaction.reply({
+    content: `Cannot override /${pending.command}.`,
+    ephemeral: true,
+  });
+  return true;
+}
+
 async function handleMusicCommand(interaction) {
   const { commandName } = interaction;
   await setEmojiGuild(interaction.guild);
+
+  if (commandName === 'sudo') {
+    return handleSudoCommand(interaction);
+  }
 
   if (commandName === 'settings') {
     await handleSettingsCommand(interaction);
@@ -668,6 +811,10 @@ async function handleMusicCommand(interaction) {
 
     const { channel, error } = requireVoice(interaction);
     if (error) {
+      rememberSudo(interaction, {
+        command: commandName,
+        query: interaction.options.getString('query', true),
+      });
       await interaction.editReply({ embeds: [errorEmbed(error)] });
       return true;
     }
@@ -712,10 +859,12 @@ async function handleMusicCommand(interaction) {
     }
     const vote = requestPlaybackControl(interaction, music, 'skip');
     if (vote.error) {
+      rememberSudo(interaction, { command: 'skip' });
       await interaction.reply({ embeds: [errorEmbed(vote.error)], ephemeral: true });
       return true;
     }
     if (!vote.pass) {
+      rememberSudo(interaction, { command: 'skip' });
       await interaction.reply({
         embeds: [skipVoteEmbed({ votes: vote.votes, needed: vote.needed, already: vote.already })],
       });
@@ -734,10 +883,12 @@ async function handleMusicCommand(interaction) {
     }
     const vote = requestPlaybackControl(interaction, music, 'stop');
     if (vote.error) {
+      rememberSudo(interaction, { command: 'stop' });
       await interaction.reply({ embeds: [errorEmbed(vote.error)], ephemeral: true });
       return true;
     }
     if (!vote.pass) {
+      rememberSudo(interaction, { command: 'stop' });
       await interaction.reply({
         embeds: [stopVoteEmbed({ votes: vote.votes, needed: vote.needed, already: vote.already })],
       });

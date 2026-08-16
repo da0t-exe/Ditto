@@ -69,6 +69,7 @@ const MUSIC_PUBLIC_COMMANDS = new Set([
   'queue',
   'nowplaying',
   'volume',
+  'sudo',
 ]);
 
 client.once('clientReady', () => {

@@ -150,6 +150,10 @@ const commands = [
   new SlashCommandBuilder()
     .setName('settings')
     .setDescription('Configure music settings for this server (ephemeral)'),
+
+  new SlashCommandBuilder()
+    .setName('sudo')
+    .setDescription('Override the last denied music command in this channel (Administrator)'),
 ].map((c) => c.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(process.env.BOT_TOKEN);
