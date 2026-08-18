@@ -5,6 +5,7 @@ const {
   StringSelectMenuOptionBuilder,
   PermissionsBitField,
   EmbedBuilder,
+  MessageFlags,
 } = require('discord.js');
 const {
   getGuildMusic,
@@ -40,11 +41,22 @@ const {
 
 let activeGuild = null;
 
-async function setEmojiGuild(guild) {
+const emojiFetching = new Set();
+
+/**
+ * Fire-and-forget: this used to be awaited in front of `deferReply()`, so a
+ * slow emoji fetch delayed every single music command — and could burn the
+ * interaction's 3s window outright.
+ */
+function setEmojiGuild(guild) {
   activeGuild = guild || null;
-  if (guild?.emojis && guild.emojis.cache.size === 0) {
-    await guild.emojis.fetch().catch(() => {});
-  }
+  if (!guild?.emojis || guild.emojis.cache.size > 0) return;
+  if (emojiFetching.has(guild.id)) return;
+  emojiFetching.add(guild.id);
+  guild.emojis
+    .fetch()
+    .catch(() => {})
+    .finally(() => emojiFetching.delete(guild.id));
 }
 
 function parseEmoji(value, fallbackName) {
@@ -217,6 +229,9 @@ function nowPlayingEmbed(track, volume, elapsedSec) {
   return applyArtwork(embed, track);
 }
 
+/** Discord embeds cap at 4096 chars — show a readable head, not a cut line. */
+const QUEUE_PREVIEW = 20;
+
 function queueEmbed(tracks, current) {
   const lines = [];
   if (current) {
@@ -236,6 +251,9 @@ function queueEmbed(tracks, current) {
   }
 
   const total = lines.length;
+  if (total > QUEUE_PREVIEW) {
+    lines.splice(QUEUE_PREVIEW, total - QUEUE_PREVIEW, `…and **${total - QUEUE_PREVIEW}** more`);
+  }
   return new EmbedBuilder()
     .setTitle(`Queue — ${total} track${total > 1 ? 's' : ''}`)
     .setDescription(lines.join('\n').slice(0, 4000))
@@ -469,7 +487,7 @@ async function handleSettingsCommand(interaction) {
   await interaction.reply({
     embeds: [settingsMainEmbed(settings, labels)],
     components: [paramSelectRow()],
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
   });
 }
 
@@ -485,7 +503,7 @@ async function handleSettingsSelect(interaction) {
   if (!canConfigure(interaction)) {
     await interaction.reply({
       content: "You don't have the 'Move Members' permission to use this.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return true;
   }
@@ -689,7 +707,7 @@ async function handleSudoCommand(interaction) {
   if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.Administrator)) {
     await interaction.reply({
       content: "You don't have the Administrator permission to use /sudo.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return true;
   }
@@ -698,7 +716,7 @@ async function handleSudoCommand(interaction) {
   if (!pending) {
     await interaction.reply({
       content: 'Nothing to override in this channel (no recent denied music command).',
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return true;
   }
@@ -708,7 +726,7 @@ async function handleSudoCommand(interaction) {
 
   if (pending.command === 'skip') {
     if (!music.current) {
-      await interaction.reply({ embeds: [errorEmbed('Nothing is playing.')], ephemeral: true });
+      await interaction.reply({ embeds: [errorEmbed('Nothing is playing.')], flags: MessageFlags.Ephemeral });
       return true;
     }
     const { skipped, next } = music.skip();
@@ -724,11 +742,11 @@ async function handleSudoCommand(interaction) {
 
   if (pending.command === 'pause') {
     if (!music.current) {
-      await interaction.reply({ embeds: [errorEmbed('Nothing is playing.')], ephemeral: true });
+      await interaction.reply({ embeds: [errorEmbed('Nothing is playing.')], flags: MessageFlags.Ephemeral });
       return true;
     }
     if (!music.pause()) {
-      await interaction.reply({ embeds: [errorEmbed('Already paused or not playing.')], ephemeral: true });
+      await interaction.reply({ embeds: [errorEmbed('Already paused or not playing.')], flags: MessageFlags.Ephemeral });
       return true;
     }
     await interaction.reply({ embeds: [pausedEmbed(music.current)] });
@@ -737,11 +755,11 @@ async function handleSudoCommand(interaction) {
 
   if (pending.command === 'resume') {
     if (!music.current) {
-      await interaction.reply({ embeds: [errorEmbed('Nothing is playing.')], ephemeral: true });
+      await interaction.reply({ embeds: [errorEmbed('Nothing is playing.')], flags: MessageFlags.Ephemeral });
       return true;
     }
     if (!music.resume()) {
-      await interaction.reply({ embeds: [errorEmbed('Nothing is paused.')], ephemeral: true });
+      await interaction.reply({ embeds: [errorEmbed('Nothing is paused.')], flags: MessageFlags.Ephemeral });
       return true;
     }
     await interaction.reply({ embeds: [resumedEmbed(music.current)] });
@@ -759,7 +777,7 @@ async function handleSudoCommand(interaction) {
     if (!channel) {
       await interaction.reply({
         embeds: [errorEmbed('Need a voice channel to override that play command.')],
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       return true;
     }
@@ -782,14 +800,14 @@ async function handleSudoCommand(interaction) {
 
   await interaction.reply({
     content: `Cannot override /${pending.command}.`,
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
   });
   return true;
 }
 
 async function handleMusicCommand(interaction) {
   const { commandName } = interaction;
-  await setEmojiGuild(interaction.guild);
+  setEmojiGuild(interaction.guild);
 
   if (commandName === 'sudo') {
     return handleSudoCommand(interaction);
@@ -854,13 +872,13 @@ async function handleMusicCommand(interaction) {
   if (commandName === 'skip') {
     const music = getGuildMusic(interaction.guildId);
     if (!music.current) {
-      await interaction.reply({ embeds: [errorEmbed('Nothing is playing.')], ephemeral: true });
+      await interaction.reply({ embeds: [errorEmbed('Nothing is playing.')], flags: MessageFlags.Ephemeral });
       return true;
     }
     const vote = requestPlaybackControl(interaction, music, 'skip');
     if (vote.error) {
       rememberSudo(interaction, { command: 'skip' });
-      await interaction.reply({ embeds: [errorEmbed(vote.error)], ephemeral: true });
+      await interaction.reply({ embeds: [errorEmbed(vote.error)], flags: MessageFlags.Ephemeral });
       return true;
     }
     if (!vote.pass) {
@@ -878,13 +896,13 @@ async function handleMusicCommand(interaction) {
   if (commandName === 'stop') {
     const music = getGuildMusic(interaction.guildId);
     if (!music.current && music.queue.length === 0 && !music.connection) {
-      await interaction.reply({ embeds: [errorEmbed('Nothing is playing.')], ephemeral: true });
+      await interaction.reply({ embeds: [errorEmbed('Nothing is playing.')], flags: MessageFlags.Ephemeral });
       return true;
     }
     const vote = requestPlaybackControl(interaction, music, 'stop');
     if (vote.error) {
       rememberSudo(interaction, { command: 'stop' });
-      await interaction.reply({ embeds: [errorEmbed(vote.error)], ephemeral: true });
+      await interaction.reply({ embeds: [errorEmbed(vote.error)], flags: MessageFlags.Ephemeral });
       return true;
     }
     if (!vote.pass) {
@@ -902,11 +920,11 @@ async function handleMusicCommand(interaction) {
   if (commandName === 'pause') {
     const music = getGuildMusic(interaction.guildId);
     if (!music.current) {
-      await interaction.reply({ embeds: [errorEmbed('Nothing is playing.')], ephemeral: true });
+      await interaction.reply({ embeds: [errorEmbed('Nothing is playing.')], flags: MessageFlags.Ephemeral });
       return true;
     }
     if (!music.pause()) {
-      await interaction.reply({ embeds: [errorEmbed('Already paused or not playing.')], ephemeral: true });
+      await interaction.reply({ embeds: [errorEmbed('Already paused or not playing.')], flags: MessageFlags.Ephemeral });
       return true;
     }
     await interaction.reply({ embeds: [pausedEmbed(music.current)] });
@@ -916,11 +934,11 @@ async function handleMusicCommand(interaction) {
   if (commandName === 'resume') {
     const music = getGuildMusic(interaction.guildId);
     if (!music.current) {
-      await interaction.reply({ embeds: [errorEmbed('Nothing is playing.')], ephemeral: true });
+      await interaction.reply({ embeds: [errorEmbed('Nothing is playing.')], flags: MessageFlags.Ephemeral });
       return true;
     }
     if (!music.resume()) {
-      await interaction.reply({ embeds: [errorEmbed('Nothing is paused.')], ephemeral: true });
+      await interaction.reply({ embeds: [errorEmbed('Nothing is paused.')], flags: MessageFlags.Ephemeral });
       return true;
     }
     await interaction.reply({ embeds: [resumedEmbed(music.current)] });
@@ -938,7 +956,7 @@ async function handleMusicCommand(interaction) {
   if (commandName === 'nowplaying') {
     const music = getGuildMusic(interaction.guildId);
     if (!music.current) {
-      await interaction.reply({ embeds: [errorEmbed('Nothing is playing.')], ephemeral: true });
+      await interaction.reply({ embeds: [errorEmbed('Nothing is playing.')], flags: MessageFlags.Ephemeral });
       return true;
     }
     await interaction.reply({

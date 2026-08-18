@@ -6,10 +6,10 @@ const {
   runYtDlp,
   extractVideoId,
   youtubeCompatArgs,
-  prefetchStream,
   searchCatalog,
   safeAlbumArt,
 } = require('./player');
+const { ytmusicSearch } = require('./ytmusic');
 
 
 function detectUrlKind(input) {
@@ -518,10 +518,6 @@ function charSimilarity(a, b) {
   return 1 - dp[n][m] / Math.max(n, m);
 }
 
-function exactTitle(want, got) {
-  return stripNoise(got) === normalizeText(want) || normalizeText(got) === normalizeText(want);
-}
-
 function isYoutubeVideoId(id) {
   return typeof id === 'string' && /^[A-Za-z0-9_-]{11}$/.test(id);
 }
@@ -582,10 +578,19 @@ function scorePrecise(preferred, entry) {
     if (ha === wa || ha === `${wa} topic`) score += 80;
     else if (ha.includes(wa) || ta.includes(wa)) score += 55;
     else {
+      // Catalogues disagree about featured artists: iTunes says "Daft Punk &
+      // Julian Casablancas" where YouTube Music says "Daft Punk". A plain
+      // includes() in one direction called those different artists and docked
+      // 70 points off the correct track. Compare the token sets both ways.
+      const waTokens = new Set(wa.split(' ').filter((t) => t.length > 1));
+      const haTokens = new Set(`${ha} ${ta}`.split(' ').filter((t) => t.length > 1));
+      let shared = 0;
+      for (const token of waTokens) if (haTokens.has(token)) shared++;
+      const overlap = waTokens.size ? shared / Math.min(waTokens.size, haTokens.size || 1) : 0;
       const simA = Math.max(charSimilarity(wa, ha), charSimilarity(wa, ta));
-      if (simA >= 0.9) score += 45;
-      else if (simA >= 0.75) score += 15;
-      else score -= 70; // hard fail without artist
+      if (overlap >= 0.6 || simA >= 0.9) score += 45;
+      else if (overlap >= 0.34 || simA >= 0.75) score += 15;
+      else score -= 70; // genuinely a different artist
     }
     if (/\btopic\b/.test(ha)) score += 15;
   }
@@ -637,13 +642,14 @@ function toTrackFromEntry(entry, sourceKind = 'youtubeMusic') {
     url: `https://music.youtube.com/watch?v=${id}`,
     watchUrl: `https://www.youtube.com/watch?v=${id}`,
     sourceKind,
-    artwork: null,
+    // YouTube Music hands back real album art — keep it instead of dropping it.
+    artwork: safeAlbumArt(entry.artwork) || null,
   };
 }
 
 /**
- * Fast ytsearch — ytsearch3, 1 query, optional cache.
- * Returns ranked track.
+ * Resolve known metadata (from a Spotify/Apple/Deezer link, or a playlist row)
+ * to a playable YouTube track.
  */
 async function searchYoutubeMusic(query, preferred = null, opts = {}) {
   const fast = Boolean(opts.fast);
@@ -653,23 +659,38 @@ async function searchYoutubeMusic(query, preferred = null, opts = {}) {
       ? `${meta.artist} - ${meta.title}`
       : meta.searchQueryAlt || query;
 
-  const printed = await ytsearchFlat(primary, opts.n || 3);
-  if (!printed.length) {
-    // One fallback with raw query if different
-    if (query && query !== primary) {
-      const again = await ytsearchFlat(query, 3);
-      if (again.length) printed.push(...again);
-    }
-  }
-  if (!printed.length) {
-    throw new Error(`No playable YouTube results for: ${primary}`);
+  // NOTE: this used to pre-filter to entries whose title matched exactly and
+  // rank only those. That is a hard filter, so a soundalike upload with the
+  // exact title ("Instant Crush" by an unrelated artist) discarded the real
+  // track before it was ever scored. scorePrecise already rewards an exact
+  // title with +100, so rank everything and let artist/album/duration decide.
+  const rankAgainst = (entries) =>
+    entries
+      .map((e) => ({ e, score: scorePrecise(meta, e) }))
+      .sort((a, b) => b.score - a.score);
+
+  let printed = await ytsearchFlat(primary, opts.n || 3);
+  if (!printed.length && query && query !== primary) {
+    printed = await ytsearchFlat(query, 3);
   }
 
-  const exact = meta.title ? printed.filter((e) => exactTitle(meta.title, e.title)) : [];
-  const pool = exact.length ? exact : printed;
-  const ranked = pool
-    .map((e) => ({ e, score: scorePrecise(meta, e) }))
-    .sort((a, b) => b.score - a.score);
+  let ranked = rankAgainst(printed);
+
+  // YouTube Music does not index every upload — bootlegs, live sets and a lot
+  // of French rap only exist on YouTube proper. Escalate to the broad search
+  // before giving up, which is what the old single-tier search always did.
+  if (!ranked.length || ranked[0].score < WEAK_MATCH_SCORE) {
+    const broad = await ytsearchYtDlp(primary, 3).catch(() => []);
+    if (broad.length) {
+      const seen = new Set(printed.map((e) => e.id));
+      printed = printed.concat(broad.filter((e) => !seen.has(e.id)));
+      ranked = rankAgainst(printed);
+    }
+  }
+
+  if (!ranked.length) {
+    throw new Error(`No playable YouTube results for: ${primary}`);
+  }
 
   console.log(
     `[music] ranked:`,
@@ -679,7 +700,7 @@ async function searchYoutubeMusic(query, preferred = null, opts = {}) {
       .join(' | ')
   );
 
-  if (fast && ranked[0].score < 55) {
+  if (fast && ranked[0].score < WEAK_MATCH_SCORE) {
     throw new Error(`Weak YouTube match for: ${meta.title || primary}`);
   }
 
@@ -694,16 +715,34 @@ async function searchYoutubeMusic(query, preferred = null, opts = {}) {
 
 const YT_SEARCH_CACHE_TTL = 15 * 60 * 1000;
 const ytSearchCache = new Map();
+/** Below this, scorePrecise() is telling us this is not the right track. */
+const WEAK_MATCH_SCORE = 55;
+/** Above this, scoreFreeText() matched the query well enough to skip the catalog. */
+const FREE_TEXT_CONFIDENT = 95;
 
-async function ytsearchFlat(query, n = 3) {
-  const key = `${n}:${String(query || '').trim().toLowerCase()}`;
+function searchCacheGet(key) {
   const hit = ytSearchCache.get(key);
-  if (hit && hit.expires > Date.now()) {
-    console.log(`[music] ytsearch cache: ${query}`);
-    return hit.entries;
-  }
+  if (hit && hit.expires > Date.now()) return hit.entries;
+  return null;
+}
 
-  console.log(`[music] search YT: ${query}`);
+function searchCacheSet(key, entries) {
+  if (entries.length) {
+    ytSearchCache.set(key, { entries, expires: Date.now() + YT_SEARCH_CACHE_TTL });
+  }
+  return entries;
+}
+
+/**
+ * Broad search across all of YouTube. Costs a yt-dlp subprocess and a full
+ * extraction (~3.4s measured), but it sees uploads YouTube Music never indexes.
+ */
+async function ytsearchYtDlp(query, n = 3) {
+  const key = `ytdlp:${n}:${String(query || '').trim().toLowerCase()}`;
+  const cached = searchCacheGet(key);
+  if (cached) return cached;
+
+  console.log(`[music] broad YouTube search: ${query}`);
   const bin = await getYtDlp();
   const t0 = Date.now();
   try {
@@ -725,8 +764,7 @@ async function ytsearchFlat(query, n = 3) {
     );
     const entries = parsePrintLines(stdout);
     console.log(`[music] ytsearch ${entries.length} hits in ${Date.now() - t0}ms`);
-    ytSearchCache.set(key, { entries, expires: Date.now() + YT_SEARCH_CACHE_TTL });
-    return entries;
+    return searchCacheSet(key, entries);
   } catch (err) {
     console.warn('[music] ytsearch failed:', err.message);
     return [];
@@ -734,18 +772,103 @@ async function ytsearchFlat(query, n = 3) {
 }
 
 /**
- * Text search: Deezer∥iTunes first (fast), then ytsearch2 with Artist - Title.
- * Avoids a slow broad ytsearch on the raw query when catalog knows the track.
+ * Default search: the YouTube Music songs index over InnerTube — one HTTP call
+ * (~0.4s) against a music-only catalogue, with artist, album, duration and real
+ * album art on every hit. Falls back to the broad search when unavailable.
+ *
+ * Both tiers return the same entry shape, so ranking does not care which ran.
+ */
+async function ytsearchFlat(query, n = 3) {
+  const key = `ytm:${n}:${String(query || '').trim().toLowerCase()}`;
+  const cached = searchCacheGet(key);
+  if (cached) {
+    console.log(`[music] search cache: ${query}`);
+    return cached;
+  }
+
+  const t0 = Date.now();
+  try {
+    const entries = await ytmusicSearch(query, { limit: Math.max(n, 5) });
+    if (entries.length) {
+      console.log(`[music] YT Music ${entries.length} hits in ${Date.now() - t0}ms: ${query}`);
+      return searchCacheSet(key, entries);
+    }
+  } catch (err) {
+    console.warn('[music] YT Music search failed:', String(err.message || err).slice(0, 120));
+  }
+
+  return ytsearchYtDlp(query, n);
+}
+
+/**
+ * Ranking for a raw user query like "daft punk instant crush", where there is
+ * no trusted catalog entry to compare field by field.
+ *
+ * scorePrecise() assumes the entry title carries "Artist - Title" — true of
+ * yt-dlp results, false of YouTube Music, whose titles are just the song. Token
+ * coverage across title + artist + album works for both.
+ */
+function scoreFreeText(query, entry, rank = 0) {
+  const tokens = normalizeText(query).split(' ').filter(Boolean);
+  if (!tokens.length) return 0;
+
+  const title = normalizeText(entry.title || '');
+  const artist = normalizeText(`${entry.channel || ''} ${entry.artist || ''}`);
+  const album = normalizeText(entry.album || '');
+  const hay = `${title} ${artist} ${album}`;
+
+  let covered = 0;
+  let inTitle = 0;
+  for (const token of tokens) {
+    if (hay.includes(token)) covered++;
+    if (title.includes(token)) inTitle++;
+  }
+
+  let score = (covered / tokens.length) * 100;
+  if (covered === tokens.length) score += 25;
+  score += (inTitle / tokens.length) * 15;
+
+  // "Song" beats "Song (Sped Up Remix) (feat. ...)" when both cover the query.
+  const extraWords = Math.max(0, title.split(' ').filter(Boolean).length - inTitle);
+  score -= Math.min(20, extraWords * 4);
+
+  const junk =
+    /\b(cover|karaoke|nightcore|sped up|slowed|reverb|8d|live|remix|mashup|reaction|instrumental|tribute|hour\s*version)\b/i;
+  if (junk.test(entry.title || '') && !junk.test(query)) score -= 60;
+
+  // The music index already ordered these by relevance — honour it on ties.
+  return score - rank * 2;
+}
+
+/** Does the catalog's artist actually appear in what the user typed? */
+function catalogArtistInQuery(query, catalog) {
+  const q = normalizeText(query);
+  const tokens = normalizeText(catalog.artist || '')
+    .split(' ')
+    .filter((t) => t.length > 1);
+  return tokens.length > 0 && tokens.some((t) => q.includes(t));
+}
+
+/**
+ * Free-text search.
+ *
+ * The catalog lookup (Deezer/iTunes) and the music search run in PARALLEL now
+ * rather than one feeding the other, which removes a whole search round-trip
+ * from every /play. The two then cross-check each other, because neither is
+ * reliable alone: the catalog rescues typo'd queries the music index misses,
+ * and the music index rejects the wrong-artist uploads the catalog sometimes
+ * matches.
  */
 async function resolveTextSearch(query) {
   const t0 = Date.now();
-  const catalog = await searchCatalog(query);
 
-  let searchQ = query;
+  const [catalog, initial] = await Promise.all([
+    searchCatalog(query).catch(() => null),
+    ytsearchFlat(query, 3),
+  ]);
+
+  let trustCatalog = Boolean(catalog);
   let preferred = { title: query, artist: '', album: '', durationSec: null };
-  let artwork = null;
-  let genre = null;
-  let catalogSource = null;
 
   if (catalog) {
     preferred = buildSearchMeta({
@@ -756,37 +879,52 @@ async function resolveTextSearch(query) {
       artwork: catalog.artwork,
       durationSec: catalog.durationSec,
     });
-    artwork = catalog.artwork;
-    genre = catalog.genre;
-    catalogSource = catalog.source;
-    searchQ = `${catalog.artist} - ${catalog.title}`;
   }
 
-  let flat = await ytsearchFlat(searchQ, catalog ? 2 : 3);
-  if (!flat.length && searchQ !== query) {
-    flat = await ytsearchFlat(query, 3);
-  }
-  if (!flat.length) {
-    throw new Error(`No playable YouTube results for: ${query}`);
-  }
-
-  const exact = preferred.title
-    ? flat.filter((e) => exactTitle(preferred.title, e.title))
-    : [];
-  const use = exact.length ? exact : flat;
-  let ranked = use
-    .map((e) => ({ e, score: scorePrecise(preferred, e) }))
-    .sort((a, b) => b.score - a.score);
-
-  // Bad match without catalog — broaden once
-  if (!catalog && ranked[0].score < 40) {
-    const more = await ytsearchFlat(`${query} official audio`, 3);
-    if (more.length) {
-      flat = flat.concat(more);
-      ranked = flat
-        .map((e) => ({ e, score: scorePrecise(preferred, e) }))
+  const rankEntries = (entries) => {
+    if (!entries.length) return [];
+    if (!trustCatalog) {
+      return entries
+        .map((e, i) => ({ e, score: scoreFreeText(query, e, i) }))
         .sort((a, b) => b.score - a.score);
     }
+    return entries
+      .map((e) => ({ e, score: scorePrecise(preferred, e) }))
+      .sort((a, b) => b.score - a.score);
+  };
+
+  let flat = initial;
+  let ranked = rankEntries(flat);
+
+  const merge = (extra) => {
+    if (!extra.length) return;
+    const seen = new Set(flat.map((e) => e.id));
+    flat = flat.concat(extra.filter((e) => !seen.has(e.id)));
+    ranked = rankEntries(flat);
+  };
+
+  if (catalog && (!ranked.length || ranked[0].score < WEAK_MATCH_SCORE)) {
+    // Nothing here matches what the catalog described. Either the user typed a
+    // typo and the catalog is right, or the catalog matched the wrong upload.
+    const freeBest = flat.length
+      ? Math.max(...flat.map((e, i) => scoreFreeText(query, e, i)))
+      : 0;
+    if (freeBest >= FREE_TEXT_CONFIDENT || !catalogArtistInQuery(query, catalog)) {
+      // Either the music index found something that plainly matches what was
+      // typed, or the catalog's artist appears nowhere in the query. Trust the
+      // query — and skip the 5s broad search entirely.
+      console.log(`[music] ignoring catalog hit "${catalog.artist}" (free-text ${freeBest.toFixed(0)})`);
+      trustCatalog = false;
+      ranked = rankEntries(flat);
+    } else {
+      merge(await ytsearchYtDlp(`${catalog.artist} - ${catalog.title}`, 3).catch(() => []));
+    }
+  } else if (!catalog && (!ranked.length || ranked[0].score < 40)) {
+    merge(await ytsearchYtDlp(`${query} official audio`, 3).catch(() => []));
+  }
+
+  if (!ranked.length) {
+    throw new Error(`No playable YouTube results for: ${query}`);
   }
 
   console.log(
@@ -800,24 +938,20 @@ async function resolveTextSearch(query) {
   const best = toTrackFromEntry(ranked[0].e);
   if (!best) throw new Error(`No playable YouTube results for: ${query}`);
 
-  if (catalog) {
+  if (trustCatalog && catalog) {
     best.title = catalog.title;
     best.artist = catalog.artist;
     best.album = catalog.album || best.album;
     best.durationSec = catalog.durationSec || best.durationSec;
+    best.artwork = pickAlbumArt(catalog.artwork, best.artwork);
+    best.genre = catalog.genre;
   }
-  best.artwork = pickAlbumArt(artwork, best.artwork);
-  best.genre = genre;
   best.origin = {
     platform: 'YouTube Music',
     platformUrl: best.url,
     fromSearch: true,
-    catalog: catalogSource,
+    catalog: trustCatalog && catalog ? catalog.source : null,
   };
-
-  try {
-    prefetchStream(best.watchUrl);
-  } catch (_) {}
 
   return best;
 }
@@ -987,7 +1121,7 @@ async function resolvePlayInput(input, opts = {}) {
 async function resolvePlayQuery(input) {
   const detected = detectUrlKind(input);
 
-  // YouTube links: stub instantly — stream+title filled in player via getStreamAndMeta
+  // YouTube links: stub instantly — title/artwork are filled in by the player
   if (detected.kind === 'youtubeMusic' || detected.kind === 'youtube') {
     const kind = detected.kind === 'youtubeMusic' ? 'youtubeMusic' : 'youtube';
     const track = trackFromYoutubeUrl(detected.raw, kind);
@@ -995,9 +1129,6 @@ async function resolvePlayQuery(input) {
       platform: kind === 'youtubeMusic' ? 'YouTube Music' : 'YouTube',
       platformUrl: detected.raw,
     };
-    try {
-      prefetchStream(track.watchUrl);
-    } catch (_) {}
     return track;
   }
 
@@ -1053,9 +1184,6 @@ async function resolvePlayQuery(input) {
           resolvedTo: kind === 'youtubeMusic' ? 'YouTube Music' : 'YouTube',
         };
         console.log(`[music] resolved ${meta.platform} via direct YT: ${meta.title} — ${meta.artist}`);
-        try {
-          prefetchStream(track.watchUrl);
-        } catch (_) {}
         return track;
       }
     } catch (err) {
@@ -1071,9 +1199,6 @@ async function resolvePlayQuery(input) {
     resolvedTo: 'YouTube Music',
   };
   console.log(`[music] resolved ${meta.platform}: ${meta.title} — ${meta.artist} → ${track.watchUrl}`);
-  try {
-    prefetchStream(track.watchUrl);
-  } catch (_) {}
   return track;
 }
 

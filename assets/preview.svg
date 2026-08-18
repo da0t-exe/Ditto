@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="404" viewBox="0 0 1200 404" font-family="'gg sans','Noto Sans','Segoe UI',Helvetica,Arial,sans-serif">
+  <defs>
+    <clipPath id="art"><rect x="470" y="52" width="72" height="72" rx="6"/></clipPath>
+    <linearGradient id="cover" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#c9a7f0"/>
+      <stop offset="100%" stop-color="#7a5ea8"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="404" rx="12" fill="#1e1f22"/>
+
+  <!-- ============ Now playing — COLORS.nowPlaying 0xFF0033 ============ -->
+  <g>
+    <rect x="32" y="32" width="560" height="164" rx="6" fill="#2b2d31"/>
+    <rect x="32" y="32" width="8" height="164" rx="4" fill="#ff0033"/>
+
+    <text x="56" y="60" fill="#f2f3f5" font-size="16" font-weight="700">Now playing</text>
+    <text x="56" y="84" fill="#00a8fc" font-size="14">YouTube Music</text>
+    <text x="56" y="106" font-size="14"><tspan fill="#c9a7f0" font-family="Consolas,'Courier New',monospace">Instant Crush</tspan><tspan fill="#dbdee1"> — Daft Punk</tspan></text>
+
+    <text x="56" y="136" fill="#f2f3f5" font-size="12" font-weight="700">Position</text>
+    <text x="56" y="156" fill="#dbdee1" font-size="14">#1 — Now playing</text>
+    <text x="248" y="136" fill="#f2f3f5" font-size="12" font-weight="700">Requested by</text>
+    <text x="248" y="156" fill="#00a8fc" font-size="14">@dot</text>
+
+    <text x="56" y="182" fill="#949ba4" font-size="12">/play</text>
+
+    <rect x="470" y="52" width="72" height="72" rx="6" fill="url(#cover)" clip-path="url(#art)"/>
+    <circle cx="506" cy="88" r="15" fill="#1e1f22" opacity="0.55"/>
+    <circle cx="506" cy="88" r="4" fill="#c9a7f0"/>
+  </g>
+
+  <!-- ============ Skip vote — COLORS.skip 0xFEE75C ============ -->
+  <g>
+    <rect x="32" y="216" width="560" height="156" rx="6" fill="#2b2d31"/>
+    <rect x="32" y="216" width="8" height="156" rx="4" fill="#fee75c"/>
+
+    <text x="56" y="244" fill="#f2f3f5" font-size="16" font-weight="700">Skip vote</text>
+    <text x="56" y="270" font-size="14"><tspan fill="#f2f3f5" font-weight="700">1/2</tspan><tspan fill="#dbdee1"> of the voice channel voted to skip.</tspan></text>
+    <text x="56" y="292" fill="#dbdee1" font-size="14">1 more vote needed.</text>
+    <text x="56" y="314" fill="#dbdee1" font-size="14">Votes reset when the next track starts.</text>
+    <text x="56" y="348" fill="#949ba4" font-size="12">/skip</text>
+  </g>
+
+  <!-- ============ Queue — COLORS.queue 0x5865F2 ============ -->
+  <g>
+    <rect x="616" y="32" width="552" height="212" rx="6" fill="#2b2d31"/>
+    <rect x="616" y="32" width="8" height="212" rx="4" fill="#5865f2"/>
+
+    <text x="640" y="60" fill="#f2f3f5" font-size="16" font-weight="700">Queue — 4 tracks</text>
+
+    <text x="640" y="94" font-size="14"><tspan fill="#f2f3f5" font-weight="700">1.</tspan><tspan fill="#c9a7f0" font-family="Consolas,'Courier New',monospace"> Instant Crush</tspan><tspan fill="#dbdee1"> — Daft Punk </tspan><tspan fill="#949ba4" font-style="italic">(now)</tspan></text>
+    <text x="640" y="124" font-size="14"><tspan fill="#f2f3f5" font-weight="700">2.</tspan><tspan fill="#c9a7f0" font-family="Consolas,'Courier New',monospace"> Alors on danse</tspan><tspan fill="#dbdee1"> — Stromae</tspan></text>
+    <text x="640" y="154" font-size="14"><tspan fill="#f2f3f5" font-weight="700">3.</tspan><tspan fill="#c9a7f0" font-family="Consolas,'Courier New',monospace"> Djadja</tspan><tspan fill="#dbdee1"> — Aya Nakamura</tspan></text>
+    <text x="640" y="184" font-size="14"><tspan fill="#f2f3f5" font-weight="700">4.</tspan><tspan fill="#c9a7f0" font-family="Consolas,'Courier New',monospace"> Basique</tspan><tspan fill="#dbdee1"> — Orelsan</tspan></text>
+
+    <text x="640" y="228" fill="#949ba4" font-size="12">/queue</text>
+  </g>
+
+  <!-- ============ measured numbers, outside the embeds ============ -->
+  <g>
+    <text x="616" y="290" fill="#6d6f78" font-size="11" font-weight="700" letter-spacing="1.2">MEASURED</text>
+
+    <text x="616" y="326" font-size="26" font-weight="700" fill="#57f287">0.39 s</text>
+    <text x="616" y="348" fill="#949ba4" font-size="12">search, median</text>
+
+    <text x="800" y="326" font-size="26" font-weight="700" fill="#57f287">10/10</text>
+    <text x="800" y="348" fill="#949ba4" font-size="12">right track picked</text>
+
+    <text x="968" y="326" font-size="26" font-weight="700" fill="#57f287">0.41 s</text>
+    <text x="968" y="348" fill="#949ba4" font-size="12">per playlist track matched</text>
+  </g>
+</svg>

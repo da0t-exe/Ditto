@@ -1,5 +1,12 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits, PermissionsBitField, EmbedBuilder } = require('discord.js');
+const {
+  Client,
+  GatewayIntentBits,
+  PermissionsBitField,
+  EmbedBuilder,
+  MessageFlags,
+} = require('discord.js');
+const store = require('./store');
 const {
   handleMusicCommand,
   handleSettingsSelect,
@@ -21,12 +28,27 @@ const client = new Client({
 // Members in the Set are forced back into this channel.
 // A member stays tracked until the channel is unlocked (/unstick),
 // even after leaving voice completely.
-const stickyChannels = new Map();
+// Persisted, so a restart does not silently unlock every channel.
+const stickyChannels = new Map(
+  Object.entries(store.get('stickyChannels', {})).map(([id, members]) => [id, new Set(members)])
+);
+
+function saveSticky() {
+  store.set(
+    'stickyChannels',
+    Object.fromEntries([...stickyChannels].map(([id, members]) => [id, [...members]]))
+  );
+}
 
 // /dm-all safeguards
-const dmCooldowns = new Map(); // guildId -> timestamp (next allowed use)
+// Persisted too: an in-memory cooldown was defeated by restarting the bot.
+const dmCooldowns = new Map(Object.entries(store.get('dmCooldowns', {})));
 const MAX_DMS = 100; // max sends per execution
 const DM_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 1 day between sends
+
+function saveDmCooldowns() {
+  store.set('dmCooldowns', Object.fromEntries(dmCooldowns));
+}
 
 function getTrackedHome(memberId) {
   for (const [channelId, members] of stickyChannels) {
@@ -82,8 +104,22 @@ client.once('clientReady', () => {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** Run `fn` over `items` with at most `concurrency` in flight. */
+async function mapPool(items, concurrency, fn) {
+  const list = [...items];
+  let next = 0;
+  const workers = Array.from({ length: Math.min(concurrency, list.length) }, async () => {
+    while (next < list.length) {
+      const idx = next++;
+      await fn(list[idx], idx);
+    }
+  });
+  await Promise.all(workers);
+}
+
 async function shutdown() {
   console.log('Shutting down...');
+  store.flushNow();
   try {
     await client.destroy();
   } catch (_) {}
@@ -93,13 +129,22 @@ async function shutdown() {
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
+// Node 18+ kills the process on an unhandled rejection. A single failed
+// Discord call should never take the whole bot down.
+process.on('unhandledRejection', (reason) => {
+  console.error('[bot] unhandled rejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[bot] uncaught exception:', err);
+});
+
 client.on('interactionCreate', async (interaction) => {
   try {
     if (await handleSettingsSelect(interaction)) return;
   } catch (err) {
     console.error('[settings] interaction error:', err);
     if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
-      await interaction.reply({ content: 'Settings UI error.', ephemeral: true }).catch(() => {});
+      await interaction.reply({ content: 'Settings UI error.', flags: MessageFlags.Ephemeral }).catch(() => {});
     }
   }
 
@@ -109,7 +154,7 @@ client.on('interactionCreate', async (interaction) => {
   if (!MUSIC_PUBLIC_COMMANDS.has(interaction.commandName) && !canMoveMembers(interaction)) {
     return interaction.reply({
       content: "You don't have the 'Move Members' permission to use this command.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   }
 
@@ -119,7 +164,7 @@ client.on('interactionCreate', async (interaction) => {
     if (await handleMusicCommand(interaction)) return;
   } catch (err) {
     console.error(`[music] /${commandName} error:`, err);
-    const payload = { content: `Music command failed: ${err.message}`, ephemeral: true };
+    const payload = { content: `Music command failed: ${err.message}`, flags: MessageFlags.Ephemeral };
     if (interaction.deferred || interaction.replied) {
       await interaction.followUp(payload).catch(() => {});
     } else {
@@ -147,15 +192,17 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.editReply(`No members in ${source}.`);
     }
 
+    // Sequential awaits made a busy channel take one round-trip per member.
+    // discord.js queues and back-offs internally, so a small pool is safe.
     let moved = 0;
-    for (const member of membersToMove) {
+    await mapPool(membersToMove, 5, async (member) => {
       try {
         await member.voice.setChannel(destination);
         moved++;
       } catch (err) {
         console.error(`Failed to move ${member.user.tag}:`, err.message);
       }
-    }
+    });
 
     return interaction.editReply(`${moved}/${membersToMove.length} member(s) moved from ${source} to ${destination}.`);
   }
@@ -172,11 +219,11 @@ client.on('interactionCreate', async (interaction) => {
       (await interaction.guild.members.fetch(target.id).catch(() => null));
 
     if (!member) {
-      return interaction.reply({ content: 'This user is not on this server.', ephemeral: true });
+      return interaction.reply({ content: 'This user is not on this server.', flags: MessageFlags.Ephemeral });
     }
 
     if (!member.voice.channelId) {
-      return interaction.reply({ content: `${target} is not in a voice channel.`, ephemeral: true });
+      return interaction.reply({ content: `${target} is not in a voice channel.`, flags: MessageFlags.Ephemeral });
     }
 
     const voiceChannels = [
@@ -189,7 +236,7 @@ client.on('interactionCreate', async (interaction) => {
     ];
 
     if (voiceChannels.length < 2) {
-      return interaction.reply({ content: "There aren't enough voice channels available.", ephemeral: true });
+      return interaction.reply({ content: "There aren't enough voice channels available.", flags: MessageFlags.Ephemeral });
     }
 
     await interaction.deferReply();
@@ -262,6 +309,7 @@ client.on('interactionCreate', async (interaction) => {
     } else {
       await interaction.followUp({ embeds: [finalEmbed] }).catch(() => {});
     }
+    return;
   }
 
   // ---------- /dm-all ----------
@@ -269,7 +317,7 @@ client.on('interactionCreate', async (interaction) => {
     if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.Administrator)) {
       return interaction.reply({
         content: 'This command is restricted to members with a role that has the Administrator permission.',
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
     }
 
@@ -284,7 +332,7 @@ client.on('interactionCreate', async (interaction) => {
       const minutes = remainingMin % 60;
       return interaction.reply({
         content: `Command on cooldown. Try again in ${hours}h ${minutes}min.`,
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
     }
 
@@ -350,6 +398,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     dmCooldowns.set(interaction.guild.id, Date.now() + DM_COOLDOWN_MS);
+    saveDmCooldowns();
 
     // Delete the tracking embed and create a new summary embed
     await interaction.deleteReply().catch(() => {});
@@ -363,6 +412,7 @@ client.on('interactionCreate', async (interaction) => {
     if (channel) {
       await channel.send({ embeds: [finalEmbed] }).catch(() => {});
     }
+    return;
   }
 
   // ---------- /stick ----------
@@ -371,6 +421,7 @@ client.on('interactionCreate', async (interaction) => {
 
     const memberSet = new Set(channel.members.keys());
     stickyChannels.set(channel.id, memberSet);
+    saveSticky();
 
     return interaction.reply(
       `${channel} is now locked. ${memberSet.size} member(s) currently present will be brought back automatically if they change channels.\n` +
@@ -383,10 +434,11 @@ client.on('interactionCreate', async (interaction) => {
     const channel = interaction.options.getChannel('channel');
 
     if (!stickyChannels.has(channel.id)) {
-      return interaction.reply({ content: `${channel} is not locked.`, ephemeral: true });
+      return interaction.reply({ content: `${channel} is not locked.`, flags: MessageFlags.Ephemeral });
     }
 
     stickyChannels.delete(channel.id);
+    saveSticky();
     return interaction.reply(`${channel} has been unlocked.`);
   }
 
@@ -408,7 +460,7 @@ client.on('interactionCreate', async (interaction) => {
   console.warn(`[bot] unhandled command: /${commandName}`);
   return interaction.reply({
     content: `Command \`/${commandName}\` is registered but not handled by this bot version. Upload the latest src files and restart.`,
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
   }).catch(() => {});
 });
 
@@ -424,7 +476,11 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 
   // Case 1: someone joins a locked channel -> add to the tracked list
   if (newState.channelId && stickyChannels.has(newState.channelId)) {
-    stickyChannels.get(newState.channelId).add(member.id);
+    const tracked = stickyChannels.get(newState.channelId);
+    if (!tracked.has(member.id)) {
+      tracked.add(member.id);
+      saveSticky();
+    }
   }
 
   // Case 2: someone leaves a locked channel for ANOTHER voice channel -> bring them back.
