@@ -19,6 +19,8 @@ require('libsodium-wrappers');
 const prism = require('prism-media');
 
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 let resolved = null;
 
 function tryStatic() {
@@ -222,25 +224,6 @@ function youtubeCompatArgs(profile = 'default') {
   return ['--js-runtimes', 'node', '--extractor-args', clients, '--geo-bypass'];
 }
 
-function canonicalWatchUrl(watchUrl) {
-  const id = extractVideoId(watchUrl);
-  if (id) return `https://www.youtube.com/watch?v=${id}`;
-  return String(watchUrl || '');
-}
-
-function watchUrlVariants(watchUrl) {
-  const id = extractVideoId(watchUrl);
-  const raw = String(watchUrl || '');
-  const variants = [];
-  if (id) {
-    variants.push(`https://www.youtube.com/watch?v=${id}`);
-    variants.push(`https://music.youtube.com/watch?v=${id}`);
-    variants.push(`https://www.youtube.com/watch?v=${id}&bpctr=9999999999&has_verified=1`);
-  }
-  if (raw && !variants.includes(raw)) variants.unshift(raw);
-  return [...new Set(variants)];
-}
-
 function runYtDlp(bin, args, opts = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, {
@@ -289,10 +272,6 @@ function runYtDlp(bin, args, opts = {}) {
   });
 }
 
-const STREAM_CACHE_TTL_MS = 3 * 60 * 60 * 1000;
-const streamCache = new Map(); // videoId -> result
-const streamInflight = new Map(); // key -> Promise
-
 function extractVideoId(watchUrl) {
   try {
     const u = new URL(watchUrl);
@@ -306,135 +285,34 @@ function extractVideoId(watchUrl) {
   return m?.[1] || null;
 }
 
-async function getDirectAudioUrl(watchUrl) {
-  const meta = await getStreamAndMeta(watchUrl);
-  return meta.streamUrl;
+const UPDATE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+function updateStampFile() {
+  return path.join(DATA_DIR, 'yt-dlp-update.json');
 }
 
-function parseStreamPrint(stdout, fallbackId) {
-  const lines = stdout
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
-
-  let videoId = fallbackId;
-  let title = 'Unknown';
-  let artist = 'Unknown';
-  let durationSec = null;
-  let streamUrl = null;
-
-  for (const line of lines) {
-    if (!line.includes('|||')) {
-      if (/^https?:\/\//i.test(line)) streamUrl = streamUrl || line;
-      continue;
-    }
-    const [mid, mtitle, mchannel, mdur, murl] = line.split('|||');
-    if (mid && mid !== 'NA' && /^[A-Za-z0-9_-]{11}$/.test(mid.split('&')[0])) {
-      videoId = mid.split('&')[0];
-    }
-    if (mtitle && mtitle !== 'NA') title = mtitle;
-    if (mchannel && mchannel !== 'NA') artist = mchannel;
-    const dur = mdur && mdur !== 'NA' ? Number(mdur) : null;
-    if (Number.isFinite(dur)) durationSec = dur;
-    if (murl && /^https?:\/\//i.test(murl)) streamUrl = murl;
+function updateDueAt() {
+  try {
+    const stamp = JSON.parse(fs.readFileSync(updateStampFile(), 'utf8'));
+    return Number(stamp.last || 0) + UPDATE_INTERVAL_MS;
+  } catch {
+    return 0;
   }
-
-  if (!streamUrl) streamUrl = lines.find((l) => /^https?:\/\//i.test(l));
-  if (!streamUrl) return null;
-
-  return {
-    streamUrl,
-    videoId: videoId || fallbackId,
-    title,
-    artist,
-    durationSec,
-    expires: Date.now() + STREAM_CACHE_TTL_MS,
-    fromCache: false,
-  };
-}
-
-async function extractOnce(bin, url, format) {
-  const args = [
-    ...(format ? ['-f', format] : []),
-    '--print',
-    '%(id)s|||%(title)s|||%(uploader|channel|artist)s|||%(duration)s|||%(url)s',
-    '--no-playlist',
-    '--no-warnings',
-    '--skip-download',
-    '--socket-timeout',
-    '15',
-    ...youtubeCompatArgs(),
-    url,
-  ];
-  const { stdout } = await runYtDlp(bin, args, { allowNonZero: true, timeoutMs: 35_000 });
-  return parseStreamPrint(stdout, extractVideoId(url));
 }
 
 /**
- * One yt-dlp call: direct audio URL + title/artist/duration.
- * Cached by videoId (~3h). Dedupes in-flight (prefetch + play share one call).
+ * `--update-to nightly` can take a full minute and competes for CPU with the
+ * first /play after a restart. Once a day is plenty.
  */
-async function getStreamAndMeta(watchUrl) {
-  const id = extractVideoId(watchUrl);
-  const cacheKey = id || String(watchUrl);
-
-  if (id) {
-    const hit = streamCache.get(id);
-    if (hit && hit.expires > Date.now() && hit.streamUrl) {
-      console.log(`[music] stream cache hit: ${id}`);
-      return { ...hit, videoId: id, fromCache: true };
-    }
-  }
-
-  if (streamInflight.has(cacheKey)) {
-    console.log(`[music] stream inflight wait: ${cacheKey}`);
-    return streamInflight.get(cacheKey);
-  }
-
-  const job = (async () => {
-    const bin = await getYtDlp();
-    const formats = ['bestaudio/best/18', 'best/18', null];
-    const urls = watchUrlVariants(watchUrl);
-    let lastErr = null;
-
-    for (const url of urls) {
-      for (const format of formats) {
-        try {
-          const parsed = await extractOnce(bin, url, format);
-          if (parsed?.streamUrl) {
-            if (parsed.videoId) streamCache.set(parsed.videoId, parsed);
-            console.log(`[music] stream via ${format || 'any'} ${url.includes('music.') ? 'YT Music' : 'YT'}`);
-            return parsed;
-          }
-        } catch (err) {
-          lastErr = err;
-          const msg = err.message || '';
-          if (/DRM protected/i.test(msg)) continue;
-          if (/not available|Requested format|unavailable/i.test(msg)) continue;
-          // Network / timeout: still try next variant
-        }
-      }
-    }
-
-    throw lastErr || new Error('yt-dlp did not return a stream URL');
-  })();
-
-  streamInflight.set(cacheKey, job);
-  try {
-    return await job;
-  } finally {
-    streamInflight.delete(cacheKey);
-  }
-}
-
-function prefetchStream(watchUrl) {
-  return getStreamAndMeta(watchUrl).catch((err) => {
-    console.warn('[music] prefetch failed:', err.message);
-    return null;
-  });
-}
-
 async function updateYtDlp() {
+  if (Date.now() < updateDueAt()) {
+    console.log('[music] yt-dlp update skipped (checked less than 24h ago)');
+    return;
+  }
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(updateStampFile(), JSON.stringify({ last: Date.now() }), 'utf8');
+  } catch (_) {}
   try {
     const bin = await getYtDlp();
     try {
@@ -525,24 +403,34 @@ const DEFAULTS = {
   defaultVolume: 50,
 };
 
+let storeReady = false;
+
 function ensureStore() {
+  if (storeReady) return;
   fs.mkdirSync(DATA_DIR, { recursive: true });
   if (!fs.existsSync(SETTINGS_FILE)) {
     fs.writeFileSync(SETTINGS_FILE, '{}', 'utf8');
   }
+  storeReady = true;
 }
 
+// Settings are read on every /play and every track start — keep them in RAM.
+let settingsCache = null;
+
 function readAll() {
+  if (settingsCache) return settingsCache;
   ensureStore();
   try {
-    return JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'));
+    settingsCache = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'));
   } catch {
-    return {};
+    settingsCache = {};
   }
+  return settingsCache;
 }
 
 function writeAll(data) {
   ensureStore();
+  settingsCache = data;
   fs.writeFileSync(SETTINGS_FILE, JSON.stringify(data, null, 2), 'utf8');
 }
 
@@ -775,7 +663,48 @@ const guildPlayers = new Map();
 
 /** ~4s of s16le stereo 48kHz — covers YouTube hiccups without muting Discord. */
 const PCM_BUFFER_BYTES = 48000 * 2 * 2 * 4;
-const YTDLP_PREBUFFER_BYTES = 512 * 1024;
+/**
+ * FFmpeg only needs enough bytes to probe the container before it starts
+ * emitting PCM; pipe backpressure handles the rest. Waiting for 512KB (the old
+ * value) added seconds of dead air on every track for no benefit.
+ */
+const YTDLP_PREBUFFER_BYTES = 128 * 1024;
+const YTDLP_PREBUFFER_GRACE_MS = 350;
+/** How long before a track ends the next one starts buffering. */
+const PRELOAD_LEAD_SEC = 25;
+
+/**
+ * Child processes of ONE audio pipeline (yt-dlp -> ffmpeg -> opus).
+ * Preloading the next track keeps two pipelines alive at once, so they cannot
+ * share a single `guildMusic._child` slot — each pipeline owns its group.
+ */
+class ProcGroup {
+  constructor() {
+    this.procs = [];
+    this.killed = false;
+  }
+
+  add(proc) {
+    if (this.killed) {
+      try {
+        proc.kill('SIGKILL');
+      } catch (_) {}
+      return proc;
+    }
+    this.procs.push(proc);
+    return proc;
+  }
+
+  kill() {
+    this.killed = true;
+    for (const proc of this.procs) {
+      try {
+        proc.kill('SIGKILL');
+      } catch (_) {}
+    }
+    this.procs = [];
+  }
+}
 
 let nativeOpusCached = null;
 function hasNativeOpus() {
@@ -802,7 +731,7 @@ function ffmpegHasLibopus() {
   return libopusCached;
 }
 
-function createDiscordResourceFromPcm(pcmBuf, guildMusic, getStderr) {
+function createDiscordResourceFromPcm(pcmBuf, guildMusic, getStderr, group) {
   if (hasNativeOpus()) {
     console.log('[music] opus encoder=@discordjs/opus');
     const resource = createAudioResource(pcmBuf, {
@@ -847,7 +776,7 @@ function createDiscordResourceFromPcm(pcmBuf, guildMusic, getStderr) {
 
     volume.pipe(opus.stdin);
     opus.stdin.on('error', () => {});
-    guildMusic._opusChild = opus;
+    group.add(opus);
 
     let opusErr = '';
     opus.stderr.on('data', (chunk) => {
@@ -855,7 +784,6 @@ function createDiscordResourceFromPcm(pcmBuf, guildMusic, getStderr) {
       if (opusErr.length > 1000) opusErr = opusErr.slice(-1000);
     });
     opus.on('close', (code) => {
-      if (guildMusic._opusChild === opus) guildMusic._opusChild = null;
       if (code && code !== 0) {
         console.error('[music] opus ffmpeg exit', code, opusErr.slice(0, 300));
       }
@@ -883,8 +811,8 @@ function createDiscordResourceFromPcm(pcmBuf, guildMusic, getStderr) {
  * Always transcode through FFmpeg → raw PCM s16le 48kHz stereo.
  * Direct googlevideo URLs often 403; for YouTube we pipe yt-dlp → ffmpeg instead.
  */
-function attachFfmpegProcess(child, guildMusic) {
-  guildMusic._child = child;
+function attachFfmpegProcess(child, guildMusic, group) {
+  group.add(child);
   let stderr = '';
   child.stderr.on('data', (chunk) => {
     stderr += chunk.toString();
@@ -894,14 +822,15 @@ function attachFfmpegProcess(child, guildMusic) {
     console.error('[music] ffmpeg spawn error:', err.message);
   });
   child.on('close', (code) => {
-    if (guildMusic._child === child) guildMusic._child = null;
     if (code && code !== 0) {
       console.error('[music] ffmpeg exit', code, stderr.slice(0, 500));
     }
   });
   const pcmBuf = new PassThrough({ highWaterMark: PCM_BUFFER_BYTES });
   child.stdout.pipe(pcmBuf);
-  return createDiscordResourceFromPcm(pcmBuf, guildMusic, () => stderr);
+  const resource = createDiscordResourceFromPcm(pcmBuf, guildMusic, () => stderr, group);
+  resource._procGroup = group;
+  return resource;
 }
 
 function createFfmpegPcmResource(inputUrl, guildMusic) {
@@ -930,7 +859,7 @@ function createFfmpegPcmResource(inputUrl, guildMusic) {
 
   console.log(`[music] ffmpeg PCM via ${ffmpegBin}${isHttp ? ' (url+headers)' : ''}`);
   const child = spawn(ffmpegBin, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-  return attachFfmpegProcess(child, guildMusic);
+  return attachFfmpegProcess(child, guildMusic, new ProcGroup());
 }
 
 /**
@@ -964,12 +893,20 @@ function pipeYtDlpOnce(watchUrl, guildMusic, ytdlpBin, profile) {
       '--no-progress',
       '--no-part',
       '--no-mtime',
+      // 15 retries x 15s socket timeout let one dead CDN host stall a /play for
+      // minutes. Fail fast — the fallback player profile retries anyway.
       '--retries',
-      '15',
+      '5',
       '--fragment-retries',
-      '15',
+      '5',
+      '--extractor-retries',
+      '2',
+      '--socket-timeout',
+      '10',
+      '--concurrent-fragments',
+      '4',
       '--buffer-size',
-      '64K',
+      '256K',
       ...youtubeCompatArgs(profile),
       '-o',
       '-',
@@ -977,10 +914,13 @@ function pipeYtDlpOnce(watchUrl, guildMusic, ytdlpBin, profile) {
     ];
 
     console.log(`[music] ffmpeg PCM via yt-dlp pipe (${ffmpegBin}) client=${profile}`);
-    const ytdlp = spawn(ytdlpBin, ytdlpArgs, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
+    const group = new ProcGroup();
+    const ytdlp = group.add(
+      spawn(ytdlpBin, ytdlpArgs, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      })
+    );
 
     const fifo = new PassThrough({ highWaterMark: 2 * 1024 * 1024 });
     ytdlp.stdout.pipe(fifo);
@@ -1008,20 +948,18 @@ function pipeYtDlpOnce(watchUrl, guildMusic, ytdlpBin, profile) {
         sawDataAt = Date.now();
         console.log(`[music] yt-dlp first byte after ${sawDataAt - t0}ms (${Math.round(n / 1024)}KB)`);
       }
-      if (n >= YTDLP_PREBUFFER_BYTES || Date.now() - sawDataAt >= 1200) {
+      if (n >= YTDLP_PREBUFFER_BYTES || Date.now() - sawDataAt >= YTDLP_PREBUFFER_GRACE_MS) {
         clearInterval(poll);
         startFfmpeg();
       }
-    }, 30);
+    }, 20);
 
     function fail(err) {
       if (settled) return;
       settled = true;
       clearInterval(poll);
       clearTimeout(giveUpTimer);
-      try {
-        ytdlp.kill('SIGKILL');
-      } catch (_) {}
+      group.kill();
       const hint = ytdlpErr.text.replace(/\s+/g, ' ').trim().slice(0, 800);
       reject(hint ? new Error(`${err.message} (${hint})`) : err);
     }
@@ -1070,8 +1008,7 @@ function pipeYtDlpOnce(watchUrl, guildMusic, ytdlpBin, profile) {
         }
       });
 
-      guildMusic._ytdlpChild = ytdlp;
-      const resource = attachFfmpegProcess(ffmpeg, guildMusic);
+      const resource = attachFfmpegProcess(ffmpeg, guildMusic, group);
       const prev = resource._ffmpegStderr;
       resource._ffmpegStderr = () => `${prev?.() || ''}\n${ytdlpErr.text}`.trim();
       settled = true;
@@ -1113,9 +1050,9 @@ class GuildMusic {
     this.pausedAt = null;
     this.accumulatedPauseMs = 0;
     this.textChannel = null;
-    this._child = null;
-    this._ytdlpChild = null;
-    this._opusChild = null;
+    this._activeGroup = null;
+    this._preload = null;
+    this._preloadTimer = null;
     this._ignoreIdle = false;
     this.skipVotes = new Set();
     this.stopVotes = new Set();
@@ -1272,14 +1209,13 @@ class GuildMusic {
       this.queue = this.queue.filter((t) => t !== track);
       this.current = track;
       await this._startCurrent(voiceChannel);
-      this._prefetchNext();
       return { position: 1, started: true };
     }
 
     await this.ensureConnection(voiceChannel);
     const position = this.enqueue(track);
     hydrateYoutubeMeta(track, 800).catch(() => {});
-    this._prefetchNext();
+    this._schedulePreload();
     return { position, started: false };
   }
 
@@ -1289,18 +1225,101 @@ class GuildMusic {
   async playOrEnqueuePlaylist(firstTrack, restTracks, voiceChannel, textChannel) {
     const result = await this.playOrEnqueue(firstTrack, voiceChannel, textChannel);
     if (restTracks?.length) this.enqueueMany(restTracks);
-    this._prefetchNext();
+    this._schedulePreload();
     return {
       ...result,
       queued: 1 + (restTracks?.length || 0),
     };
   }
 
-  _prefetchNext() {
+  /**
+   * The old `_prefetchNext` warmed a stream-URL cache that the playback path
+   * never read — a whole extra yt-dlp extraction per track, thrown away. This
+   * builds the real audio pipeline for the next track instead, so `_playNext`
+   * has a resource ready the moment the current track ends.
+   */
+  _schedulePreload(delayMs) {
+    if (this._preloadTimer) clearTimeout(this._preloadTimer);
+    if (!this.queue.length) return;
+
+    let wait = delayMs;
+    if (wait === undefined) {
+      // Aim for ~25s before the end of the current track: early enough to be
+      // ready, late enough that yt-dlp is not holding an idle connection for
+      // the whole song (YouTube drops those, and the resume can stutter).
+      const duration = Number(this.current?.durationSec) || 0;
+      const remaining = duration ? duration - this.getElapsedSec() : 0;
+      wait = remaining > 0 ? Math.max(1000, (remaining - PRELOAD_LEAD_SEC) * 1000) : 30_000;
+    }
+
+    this._preloadTimer = setTimeout(() => {
+      this._preloadTimer = null;
+      this._preloadNext();
+    }, wait);
+  }
+
+  _preloadNext() {
     const next = this.queue[0];
     if (!next) return;
+    if (this._preload && this._preload.track === next) return;
+    this._dropPreload();
+
     const url = next.watchUrl || next.url;
-    if (url) prefetchStream(url);
+    if (!url) return;
+
+    const entry = { track: next, resource: null, promise: null, dropped: false };
+    entry.promise = getYtDlp()
+      .then((bin) => createPipedYtDlpResource(url, this, bin))
+      .then((resource) => {
+        if (entry.dropped) {
+          resource._procGroup?.kill();
+          return null;
+        }
+        entry.resource = resource;
+        console.log(`[music] preloaded next: ${next.title || url}`);
+        return resource;
+      })
+      .catch((err) => {
+        console.warn('[music] preload failed:', String(err.message || err).slice(0, 160));
+        return null;
+      });
+    this._preload = entry;
+  }
+
+  /** Returns a promise for the preloaded resource, or null if there is none. */
+  _takePreloaded(track) {
+    const entry = this._preload;
+    this._preload = null;
+    if (this._preloadTimer) {
+      clearTimeout(this._preloadTimer);
+      this._preloadTimer = null;
+    }
+    if (!entry) return null;
+    if (entry.track !== track) {
+      this._discardEntry(entry);
+      return null;
+    }
+    console.log('[music] using preloaded stream');
+    return entry.promise;
+  }
+
+  _dropPreload() {
+    const entry = this._preload;
+    this._preload = null;
+    if (this._preloadTimer) {
+      clearTimeout(this._preloadTimer);
+      this._preloadTimer = null;
+    }
+    if (entry) this._discardEntry(entry);
+  }
+
+  _discardEntry(entry) {
+    entry.dropped = true;
+    if (entry.resource) {
+      entry.resource._procGroup?.kill();
+      return;
+    }
+    entry.promise?.then((resource) => resource?._procGroup?.kill()).catch(() => {});
   }
 
   async _startCurrent(voiceChannel = null) {
@@ -1323,35 +1342,60 @@ class GuildMusic {
     console.log(`[music] starting (${mode}): ${url}`);
 
     let resource;
+    // Kept so a failure AFTER the pipeline was built (a voice join that times
+    // out, say) does not leave yt-dlp/ffmpeg running forever.
+    let inflightResourceP = null;
     try {
       if (mode === 'tempDownload') {
         if (voiceChannel) await this.ensureConnection(voiceChannel);
         else if (!this.connection) throw new Error('Not connected to voice.');
         resource = await this._resourceFromDownload(url);
       } else {
-        const ytdlpBin = await getYtDlp();
         const playUrl = this.current.watchUrl || url;
-        const needArt =
-          !this.current.artwork || isYoutubeClipThumb(this.current.artwork);
-        const tasks = [];
-        if (voiceChannel) tasks.push(this.ensureConnection(voiceChannel));
-        if (needArt) {
-          tasks.push(
-            enrichTrackFromCatalog(this.current, { timeoutMs: 400 }).catch(() => this.current)
+        const track = this.current;
+
+        // Audio first. Joining voice and fetching artwork/titles used to run to
+        // completion BEFORE yt-dlp was even spawned, adding ~1.2s of dead time
+        // to every track. None of it is needed to push bytes, so it all runs
+        // alongside the pipeline now.
+        const fresh = () =>
+          getYtDlp().then((bin) => createPipedYtDlpResource(playUrl, this, bin));
+        const preloaded = this._takePreloaded(track);
+        const resourceP = preloaded
+          ? preloaded.then((res) => res || fresh()).catch(fresh)
+          : fresh();
+
+        const connP = voiceChannel ? this.ensureConnection(voiceChannel) : Promise.resolve();
+
+        const metaTasks = [];
+        if (!track.artwork || isYoutubeClipThumb(track.artwork)) {
+          metaTasks.push(
+            enrichTrackFromCatalog(track, { timeoutMs: 400 }).catch(() => track)
           );
         }
-        if (this.current.fromStub || !realMeta(this.current.title) || !realMeta(this.current.artist)) {
-          tasks.push(hydrateYoutubeMeta(this.current, 800).catch(() => this.current));
+        if (track.fromStub || !realMeta(track.title) || !realMeta(track.artist)) {
+          metaTasks.push(hydrateYoutubeMeta(track, 800).catch(() => track));
         }
-        await Promise.all(tasks);
-        if (isYoutubeClipThumb(this.current.artwork)) this.current.artwork = null;
-        resource = await createPipedYtDlpResource(playUrl, this, ytdlpBin);
+        const metaP = Promise.all(metaTasks).catch(() => {});
+
+        inflightResourceP = resourceP;
+        await connP;
+        resource = await resourceP;
+        // Metadata only decorates the embed; give it a short grace (it is
+        // normally long done by now) but never hold audio back for it.
+        if (metaTasks.length) await Promise.race([metaP, sleep(250)]);
+        if (isYoutubeClipThumb(track.artwork)) track.artwork = null;
       }
     } catch (err) {
       console.error('[music] failed to create audio resource:', err);
+      if (!resource && inflightResourceP) {
+        inflightResourceP.then((res) => res?._procGroup?.kill()).catch(() => {});
+      }
       this.current = null;
       throw err;
     }
+
+    this._activeGroup = resource._procGroup || null;
 
     if (resource.volume) {
       const vol = this.volume <= 0 ? 0 : Math.max(0.01, this.volume / 100);
@@ -1364,8 +1408,10 @@ class GuildMusic {
     this.player.play(resource);
     try {
       await entersState(this.player, AudioPlayerStatus.Playing, 20_000);
-      console.log('[music] player reached Playing');
+      console.log(`[music] player reached Playing (${Date.now() - this.startedAt}ms)`);
       this._ignoreIdle = false;
+      // Warm the next track now that this one is stable — gapless transitions.
+      this._schedulePreload();
     } catch (err) {
       const ffErr = resource._ffmpegStderr?.() || '';
       console.error('[music] never reached Playing:', err.message, ffErr.slice(0, 200));
@@ -1410,7 +1456,6 @@ class GuildMusic {
         this.current = this.queue.shift();
         try {
           await this._startCurrent(null);
-          this._prefetchNext();
           return;
         } catch (err) {
           console.error('[music] failed next track:', err.message);
@@ -1477,6 +1522,7 @@ class GuildMusic {
     this.queue = [];
     this.current = null;
     this.resetControlVotes();
+    this._dropPreload();
     this._ignoreIdle = true;
     this.player.stop(true);
     this._cleanupTemp();
@@ -1490,23 +1536,9 @@ class GuildMusic {
   }
 
   _killChild() {
-    if (this._ytdlpChild) {
-      try {
-        this._ytdlpChild.kill('SIGKILL');
-      } catch (_) {}
-      this._ytdlpChild = null;
-    }
-    if (this._opusChild) {
-      try {
-        this._opusChild.kill('SIGKILL');
-      } catch (_) {}
-      this._opusChild = null;
-    }
-    if (this._child) {
-      try {
-        this._child.kill('SIGKILL');
-      } catch (_) {}
-      this._child = null;
+    if (this._activeGroup) {
+      this._activeGroup.kill();
+      this._activeGroup = null;
     }
   }
 
@@ -1555,9 +1587,6 @@ module.exports = {
   ensureFfmpeg,
   getTempDir,
   getYtDlp,
-  getDirectAudioUrl,
-  getStreamAndMeta,
-  prefetchStream,
   extractVideoId,
   runYtDlp,
   youtubeCompatArgs,
