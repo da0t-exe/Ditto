@@ -12,7 +12,7 @@ Node.js · discord.js 14 · @discordjs/voice · yt-dlp · FFmpeg
 [![node](https://img.shields.io/badge/Node%2018%2B-000000?style=flat-square)](#install)
 [![license](https://img.shields.io/badge/MIT-000000?style=flat-square)](LICENSE)
 
-<img src="https://raw.githubusercontent.com/da0t-exe/Ditto/main/assets/preview.png" width="716" alt="Ditto" />
+<img src="https://raw.githubusercontent.com/da0t-exe/Ditto/main/assets/preview.png" width="400" alt="Ditto" />
 
 </div>
 
