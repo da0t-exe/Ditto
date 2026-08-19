@@ -59,6 +59,7 @@ half the listeners to agree.
 Requires **Move Members**.
 
 | | |
+|---|---|
 | `/move` | Move everyone from one voice channel to another |
 | `/stick` | Lock a channel — members who leave get pulled back |
 | `/unstick` | Unlock it |
