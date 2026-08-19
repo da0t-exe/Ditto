@@ -8,7 +8,7 @@
 
 Node.js · discord.js 14 · @discordjs/voice · yt-dlp · FFmpeg
 
-[![version](https://img.shields.io/badge/v1.0-000000?style=flat-square)](https://github.com/da0t-exe/Ditto)
+[![version](https://img.shields.io/badge/v1.1-000000?style=flat-square)](https://github.com/da0t-exe/Ditto)
 [![node](https://img.shields.io/badge/Node%2018%2B-000000?style=flat-square)](#install)
 [![license](https://img.shields.io/badge/MIT-000000?style=flat-square)](LICENSE)
 
