@@ -145,9 +145,9 @@ Slash commands are registered on every server each time the bot starts, so
 they show up instantly — there is no deploy step. On the first start Ditto
 fetches what it needs by itself, into `data/`:
 
-- a **Java 21** runtime (unless Java 17+ is already installed) and the latest
-  **Lavalink** with its YouTube plugin — checked for updates daily, restarted
-  onto a new version only when nobody is listening;
+- a **Java 21** runtime (unless Java 17+ is already installed) and the newest
+  **Lavalink 4.x** with its YouTube plugin — checked for updates daily,
+  restarted onto a new version only when nobody is listening;
 - **yt-dlp**, updated daily; FFmpeg comes with `npm install`;
 - the captcha photo pool, up to 150 photos per category.
 
