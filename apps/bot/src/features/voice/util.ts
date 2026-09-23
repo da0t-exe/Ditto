@@ -1,8 +1,8 @@
 import { ChannelType, PermissionFlagsBits, type Guild, type GuildMember, type VoiceBasedChannel } from 'discord.js';
 
 /**
- * Déplacements faits par une commande de modération : le verrou (/lock) les laisse passer
- * et arrête de suivre le membre, sinon il le ramènerait aussitôt.
+ * Moves made by a moderation command. Locks (/lock) let them through and stop
+ * tracking the member; otherwise the lock would pull them straight back.
  */
 const commandMoves = new Map<string, number>();
 
@@ -21,7 +21,7 @@ export async function moveByCommand(member: GuildMember, channel: VoiceBasedChan
   await member.voice.setChannel(channel);
 }
 
-/** Salons vocaux où le bot peut déplacer des gens (hors AFK). */
+/** Voice channels the bot can move people into (AFK excluded). */
 export function movableChannels(guild: Guild): VoiceBasedChannel[] {
   const me = guild.members.me;
   return [

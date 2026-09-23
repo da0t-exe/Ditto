@@ -52,7 +52,7 @@ setInterval(() => {
   for (const [k, s] of sessions) if (s.expiresAt < now) sessions.delete(k);
 }, 60_000).unref();
 
-// ---------- Essais ratés et blocage (persistés) ----------
+// ---------- Failed attempts and lockout (persisted) ----------
 
 const selectState = db.prepare<[string, string], { failures: number; lockedUntil: number }>(
   'SELECT failures, locked_until AS lockedUntil FROM captcha_state WHERE guild_id = ? AND user_id = ?'

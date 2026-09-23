@@ -3,17 +3,18 @@ import { getConfig } from '../../core/config.js';
 import { log } from '../../core/log.js';
 import { logTo } from '../../core/logs.js';
 
-/** Journal vocal + AFK automatique (sourd depuis X minutes → salon AFK). */
+/** Voice log, and auto-AFK (deafened for X minutes → AFK channel). */
 const afkTimers = new Map<string, NodeJS.Timeout>();
 
 function voiceLog(oldState: VoiceState, newState: VoiceState) {
   const member = newState.member;
   if (!member || member.user.bot || !getConfig(newState.guild.id).voiceLog) return;
   const name = `**${member.user.username}**`;
-  if (!oldState.channelId && newState.channelId) logTo(newState.guild, `🟢 ${name} a rejoint ${newState.channel}`);
-  else if (oldState.channelId && !newState.channelId) logTo(newState.guild, `🔴 ${name} a quitté ${oldState.channel}`);
+  const g = newState.guild;
+  if (!oldState.channelId && newState.channelId) logTo(g, `🟢 ${name} joined ${newState.channel}`, `🟢 ${name} a rejoint ${newState.channel}`);
+  else if (oldState.channelId && !newState.channelId) logTo(g, `🔴 ${name} left ${oldState.channel}`, `🔴 ${name} a quitté ${oldState.channel}`);
   else if (oldState.channelId !== newState.channelId) {
-    logTo(newState.guild, `🔁 ${name} : ${oldState.channel} → ${newState.channel}`);
+    logTo(g, `🔁 ${name}: ${oldState.channel} → ${newState.channel}`, `🔁 ${name} : ${oldState.channel} → ${newState.channel}`);
   }
 }
 
@@ -25,8 +26,9 @@ function autoAfk(newState: VoiceState) {
   afkTimers.delete(key);
 
   const afk = newState.guild.afkChannelId;
-  const minutes = getConfig(newState.guild.id).afkIdleMinutes;
-  if (!afk || minutes <= 0 || !newState.channelId || newState.channelId === afk || !newState.selfDeaf) return;
+  const cfg = getConfig(newState.guild.id);
+  const minutes = cfg.afkIdleMinutes;
+  if (!cfg.autoAfk || !afk || minutes <= 0 || !newState.channelId || newState.channelId === afk || !newState.selfDeaf) return;
 
   const channelId = newState.channelId;
   afkTimers.set(
@@ -34,9 +36,16 @@ function autoAfk(newState: VoiceState) {
     setTimeout(() => {
       afkTimers.delete(key);
       if (!member.voice.selfDeaf || member.voice.channelId !== channelId) return;
+      const name = member.user.username;
       member.voice
-        .setChannel(afk, 'Sourd depuis trop longtemps')
-        .then(() => logTo(newState.guild, `💤 **${member.user.username}** envoyé en AFK (sourd depuis ${minutes} min)`))
+        .setChannel(afk, 'Deafened for too long')
+        .then(() =>
+          logTo(
+            newState.guild,
+            `💤 **${name}** moved to AFK (deafened for ${minutes} min)`,
+            `💤 **${name}** envoyé en AFK (sourd depuis ${minutes} min)`
+          )
+        )
         .catch((err) => log.warn('afk', err.message));
     }, minutes * 60_000)
   );

@@ -1,7 +1,7 @@
-/** npm run captcha:fetch — construit (ou complète) la réserve d'images du captcha. */
+/** npm run captcha:fetch — builds (or tops up) the captcha image pool. */
 import { buildPool } from '../features/captcha/build.js';
 
 buildPool().catch((err) => {
-  console.error('Échec :', err);
+  console.error('Failed:', err);
   process.exit(1);
 });

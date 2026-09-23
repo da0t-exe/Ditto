@@ -8,14 +8,14 @@ const TILE = 150;
 const GAP = 6;
 const PAD = 10;
 const SIZE = PAD * 2 + TILE * 3 + GAP * 2;
-const SOURCE = 256; // taille des images stockées
+const SOURCE = 256; // size of the stored photos
 
 export interface Grid {
   hash: string;
+  /** Category key, e.g. « traffic_light ». */
   target: string;
-  prompt: string;
   tiles: string[];
-  /** Index (0-8) des cases à cocher. */
+  /** Indexes (0-8) of the tiles to tick. */
   answer: number[];
   image: Buffer;
 }
@@ -28,7 +28,7 @@ const bumpUsage = db.prepare(
 const gridSeen = db.prepare<[string], { hash: string }>('SELECT hash FROM captcha_grids WHERE hash = ?');
 const saveGrid = db.prepare('INSERT OR IGNORE INTO captcha_grids (hash, created_at) VALUES (?, ?)');
 
-const rand = (min: number, max: number) => crypto.randomInt(min, max); // max exclu
+const rand = (min: number, max: number) => crypto.randomInt(min, max); // max excluded
 
 function shuffle<T>(items: T[]): T[] {
   const a = [...items];
@@ -39,7 +39,7 @@ function shuffle<T>(items: T[]): T[] {
   return a;
 }
 
-/** Tire au hasard, en privilégiant les images les moins montrées. */
+/** Random pick, favouring the photos shown least. */
 function pickLeastUsed(candidates: PoolImage[], n: number): PoolImage[] {
   const sample = shuffle(candidates).slice(0, Math.max(n * 8, 40));
   return sample
@@ -47,10 +47,6 @@ function pickLeastUsed(candidates: PoolImage[], n: number): PoolImage[] {
     .sort((a, b) => a.uses - b.uses)
     .slice(0, n)
     .map((x) => x.img);
-}
-
-export function poolClasses() {
-  return getPool()?.classes ?? [];
 }
 
 export async function makeGrid(): Promise<Grid> {
@@ -61,7 +57,7 @@ export async function makeGrid(): Promise<Grid> {
     const cls = pool.classes[rand(0, pool.classes.length)];
     const positives = pool.images.filter((im) => im.strong.includes(cls.key));
     const negatives = pool.images.filter((im) => !im.weak.includes(cls.key) && !im.strong.includes(cls.key));
-    const wanted = rand(3, 6); // 3 à 5 bonnes cases
+    const wanted = rand(3, 6); // 3 to 5 right tiles
     const chosen = shuffle([...pickLeastUsed(positives, wanted), ...pickLeastUsed(negatives, 9 - wanted)]);
     if (chosen.length !== 9) continue;
 
@@ -79,7 +75,6 @@ export async function makeGrid(): Promise<Grid> {
     return {
       hash,
       target: cls.key,
-      prompt: cls.prompt,
       tiles: chosen.map((c) => c.id),
       answer: chosen.flatMap((im, idx) => (im.strong.includes(cls.key) ? [idx] : [])),
       image,
@@ -88,7 +83,7 @@ export async function makeGrid(): Promise<Grid> {
   throw new Error('GRID_FAILED');
 }
 
-/** Chaque case est recadrée, retournée et teintée au hasard : deux affichages d'une même photo diffèrent. */
+/** Each tile is cropped, flipped and tinted at random, so one photo never looks the same twice. */
 async function tile(id: string): Promise<Buffer> {
   const crop = rand(224, SOURCE + 1);
   const left = rand(0, SOURCE - crop + 1);

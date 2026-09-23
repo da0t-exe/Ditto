@@ -4,5 +4,5 @@ import { rolesFeature } from './roles/index.js';
 import { setupFeature } from './setup.js';
 import { voiceFeature } from './voice/index.js';
 
-/** L'ordre compte : setup détecte la configuration avant que les autres s'en servent. */
+/** Order matters: setup detects the configuration before the others use it. */
 export const features: Feature[] = [setupFeature, rolesFeature, captchaFeature, voiceFeature];

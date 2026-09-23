@@ -6,7 +6,7 @@ import { log } from './core/log.js';
 import { features } from './features/index.js';
 
 if (!env.token) {
-  console.error('BOT_TOKEN manquant : copie .env.example en .env et remplis-le.');
+  console.error('BOT_TOKEN is missing: copy .env.example to .env and fill it in.');
   process.exit(1);
 }
 
@@ -22,20 +22,20 @@ async function prepareGuild(guild: Guild) {
   if (env.guildIds.length && !env.guildIds.includes(guild.id)) return;
   try {
     await guild.members.fetch();
-    // Commandes par serveur : visibles tout de suite, plus besoin de « npm run deploy ».
+    // Per-server commands show up instantly, so there is no separate deploy step.
     await guild.commands.set(dispatcher.commands.map((c) => c.data.toJSON()));
     for (const f of features) {
       await f.guildReady?.(guild).catch((err) => log.error(f.name, `${guild.name}:`, err));
     }
-    log.info('bot', `${guild.name} prêt (${guild.memberCount} membres)`);
+    log.info('bot', `${guild.name} ready (${guild.memberCount} members)`);
   } catch (err) {
-    log.error('bot', `${guild.name} :`, err);
+    log.error('bot', `${guild.name}:`, err);
   }
 }
 
 client.once(Events.ClientReady, async (c) => {
-  log.info('bot', `Connecté : ${c.user.tag}`);
-  // La V1 enregistrait parfois ses commandes globalement : on les retire pour éviter les doublons.
+  log.info('bot', `Logged in as ${c.user.tag}`);
+  // Commands are per server; clear any global ones so nothing shows twice.
   await c.application.commands.set([]).catch(() => {});
   for (const guild of c.guilds.cache.values()) await prepareGuild(guild);
 });
@@ -43,14 +43,14 @@ client.once(Events.ClientReady, async (c) => {
 client.on(Events.GuildCreate, (guild) => void prepareGuild(guild));
 
 async function shutdown() {
-  log.info('bot', 'Arrêt…');
+  log.info('bot', 'Shutting down…');
   await client.destroy().catch(() => {});
   db.close();
   process.exit(0);
 }
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
-process.on('unhandledRejection', (reason) => log.error('bot', 'promesse rejetée :', reason));
-process.on('uncaughtException', (err) => log.error('bot', 'exception :', err));
+process.on('unhandledRejection', (reason) => log.error('bot', 'unhandled rejection:', reason));
+process.on('uncaughtException', (err) => log.error('bot', 'uncaught exception:', err));
 
 client.login(env.token);

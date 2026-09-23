@@ -13,15 +13,15 @@ export interface Command {
   autocomplete?(i: AutocompleteInteraction<'cached'>): Promise<unknown>;
 }
 
-/** Les customId des composants sont « prefixe:arg1:arg2 ». */
+/** Component customIds read « prefix:arg1:arg2 ». */
 export type ComponentHandler = (i: MessageComponentInteraction<'cached'>, args: string[]) => Promise<unknown>;
 
 export interface Feature {
   name: string;
   commands?: Command[];
   components?: Record<string, ComponentHandler>;
-  /** Branche les écouteurs d'événements, avant la connexion. */
+  /** Wires event listeners, before login. */
   init?(client: Client): void;
-  /** Appelé pour chaque serveur une fois le bot prêt (et à chaque nouveau serveur). */
+  /** Called for every server once the bot is ready, and for every server it joins later. */
   guildReady?(guild: Guild): Promise<void>;
 }

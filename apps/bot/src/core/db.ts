@@ -23,7 +23,7 @@ db.exec(`
     PRIMARY KEY (guild_id, user_id)
   );
 
-  -- Empreinte de chaque grille déjà montrée : aucune n'est servie deux fois.
+  -- Fingerprint of every grid already shown: none is served twice.
   CREATE TABLE IF NOT EXISTS captcha_grids (
     hash       TEXT PRIMARY KEY,
     created_at INTEGER NOT NULL

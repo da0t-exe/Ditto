@@ -1,9 +1,9 @@
 /**
- * Construit la réserve d'images du captcha à partir d'Open Images (Google, photos CC BY 2.0).
+ * Builds the captcha image pool from Open Images (Google, photos under CC BY 2.0).
  *
- * On ne garde que des photos (pas de dessins), recadrées en carré autour de l'objet,
- * et on note pour chaque image les catégories bien visibles (bonne réponse) et celles
- * présentes même en petit (jamais proposées comme mauvaise réponse).
+ * Only photos are kept (no drawings), cropped to a square around the object. Each
+ * image records the categories that are clearly visible (a right answer) and the
+ * ones present even if small (never offered as a wrong answer).
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -29,9 +29,9 @@ const SUBSETS = [
 ];
 
 const PER_CLASS = Number(process.env.CAPTCHA_PER_CLASS ?? 150);
-const MIN_BOX_AREA = 0.04; // part de la photo d'origine occupée par l'objet pour être candidate
-const STRONG = 0.08; // part du carré final pour compter comme bonne réponse
-const WEAK = 0.002; // en dessous, l'objet est considéré absent
+const MIN_BOX_AREA = 0.04; // share of the original photo the object must fill to be a candidate
+const STRONG = 0.08; // share of the final square to count as a right answer
+const WEAK = 0.002; // below this, the object counts as absent
 const MIN_CLASS = 12;
 const OUT = 256;
 
@@ -48,7 +48,7 @@ type Log = (msg: string) => void;
 
 async function download(url: string, dest: string, logFn: Log) {
   if (fs.existsSync(dest)) return dest;
-  logFn(`téléchargement ${path.basename(dest)}…`);
+  logFn(`downloading ${path.basename(dest)}…`);
   const res = await fetch(url);
   if (!res.ok || !res.body) throw new Error(`${url} -> HTTP ${res.status}`);
   const tmp = `${dest}.part`;
@@ -61,7 +61,7 @@ function lines(file: string) {
   return readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity });
 }
 
-/** CSV avec champs entre guillemets (les titres Flickr contiennent des virgules). */
+/** CSV with quoted fields (Flickr titles contain commas). */
 function parseCsvLine(line: string): string[] {
   const out: string[] = [];
   let cur = '';
@@ -90,7 +90,7 @@ async function fetchImage(url: string | undefined): Promise<Buffer | null> {
     const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
     if (!res.ok) return null;
     const buf = Buffer.from(await res.arrayBuffer());
-    return buf.length > 2000 ? buf : null; // Flickr renvoie une petite image « indisponible »
+    return buf.length > 2000 ? buf : null; // Flickr answers with a small "unavailable" image
   } catch {
     return null;
   }
@@ -100,7 +100,7 @@ export async function buildPool(logFn: Log = console.log): Promise<Manifest> {
   fs.mkdirSync(CACHE_DIR, { recursive: true });
   fs.mkdirSync(IMG_DIR, { recursive: true });
 
-  // 1. Noms → identifiants Open Images
+  // 1. Names → Open Images ids
   const classesFile = await download(CLASSES_URL, path.join(CACHE_DIR, 'classes.csv'), logFn);
   const midByName = new Map<string, string>();
   for await (const l of lines(classesFile)) {
@@ -111,13 +111,13 @@ export async function buildPool(logFn: Log = console.log): Promise<Manifest> {
   const classes = CAPTCHA_CLASSES.map((c) => ({ ...c, targetMids: mids(c.names), confuserMids: mids(c.confusers) }));
   const relevant = new Set(classes.flatMap((c) => [...c.targetMids, ...c.confuserMids]));
 
-  // Reprise : les images déjà traitées sont conservées.
+  // Resume: images already processed are kept.
   const previous = new Map<string, PoolImage>();
   try {
     const old = JSON.parse(fs.readFileSync(MANIFEST_FILE, 'utf8')) as Manifest;
     for (const im of old.images) if (fs.existsSync(path.join(IMG_DIR, `${im.id}.jpg`))) previous.set(im.id, im);
   } catch {
-    /* première construction */
+    /* first build */
   }
 
   const kept = new Map<string, PoolImage>(previous);
@@ -127,7 +127,7 @@ export async function buildPool(logFn: Log = console.log): Promise<Manifest> {
     const missing = classes.filter((c) => countOf(c.key) < PER_CLASS);
     if (!missing.length) break;
 
-    // 2. Boîtes des objets qui nous intéressent
+    // 2. Boxes of the objects we care about
     const bboxFile = await download(subset.bbox, path.join(CACHE_DIR, `${subset.name}-bbox.csv`), logFn);
     const boxes = new Map<string, Box[]>();
     let header = true;
@@ -144,7 +144,7 @@ export async function buildPool(logFn: Log = console.log): Promise<Manifest> {
       boxes.set(f[0], list);
     }
 
-    // 3. Candidates par catégorie
+    // 3. Candidates per category
     const queue: { id: string; key: string }[] = [];
     for (const c of missing) {
       const cands = [...boxes]
@@ -156,7 +156,7 @@ export async function buildPool(logFn: Log = console.log): Promise<Manifest> {
     }
     if (!queue.length) continue;
 
-    // 4. Métadonnées (URL, auteur, licence) des seules images retenues
+    // 4. Metadata (URL, author, licence) for the selected images only
     const wanted = new Set(queue.map((q) => q.id));
     const metaFile = await download(subset.meta, path.join(CACHE_DIR, `${subset.name}-meta.csv`), logFn);
     const meta = new Map<string, Record<string, string>>();
@@ -171,15 +171,15 @@ export async function buildPool(logFn: Log = console.log): Promise<Manifest> {
       meta.set(f[0], Object.fromEntries(cols.map((c, i) => [c, f[i]])));
     }
 
-    // 5. Téléchargement, recadrage, étiquetage
-    logFn(`${subset.name} : ${queue.length} images candidates`);
+    // 5. Download, crop, label
+    logFn(`${subset.name}: ${queue.length} candidate images`);
     let done = 0;
     const worker = async () => {
       for (;;) {
         const job = queue.shift();
         if (!job) return;
         done++;
-        if (done % 100 === 0) logFn(`  ${done} traitées, ${kept.size} gardées`);
+        if (done % 100 === 0) logFn(`  ${done} processed, ${kept.size} kept`);
         if (kept.has(job.id) || countOf(job.key) >= PER_CLASS) continue;
         const m = meta.get(job.id);
         if (!m || (m.Rotation && Number(m.Rotation) !== 0)) continue;
@@ -199,14 +199,14 @@ export async function buildPool(logFn: Log = console.log): Promise<Manifest> {
             source: m.OriginalLandingURL || undefined,
           });
         } catch {
-          /* image illisible */
+          /* unreadable image */
         }
       }
     };
     await Promise.all(Array.from({ length: 8 }, worker));
   }
 
-  const counts = classes.map((c) => ({ key: c.key, prompt: c.prompt, count: countOf(c.key) }));
+  const counts = classes.map((c) => ({ key: c.key, count: countOf(c.key) }));
   const manifest: Manifest = {
     version: 1,
     createdAt: new Date().toISOString(),
@@ -214,8 +214,8 @@ export async function buildPool(logFn: Log = console.log): Promise<Manifest> {
     images: [...kept.values()],
   };
   fs.writeFileSync(MANIFEST_FILE, JSON.stringify(manifest));
-  for (const c of counts) logFn(`  ${c.key.padEnd(14)} ${c.count}${c.count < MIN_CLASS ? ' (ignorée, trop peu)' : ''}`);
-  logFn(`Réserve prête : ${manifest.images.length} images, ${manifest.classes.length} catégories.`);
+  for (const c of counts) logFn(`  ${c.key.padEnd(14)} ${c.count}${c.count < MIN_CLASS ? ' (skipped, too few)' : ''}`);
+  logFn(`Pool ready: ${manifest.images.length} images, ${manifest.classes.length} categories.`);
   return manifest;
 }
 
@@ -230,7 +230,7 @@ async function processImage(
   const { width: w = 0, height: h = 0 } = await img.metadata();
   if (w < 120 || h < 120) return null;
 
-  // Carré centré sur le plus grand objet de la catégorie demandée.
+  // Square centred on the largest object of the requested category.
   const own = classes.find((c) => c.key === key)!;
   const target = boxes
     .filter((b) => own.targetMids.includes(b.mid))

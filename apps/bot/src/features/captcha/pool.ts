@@ -8,9 +8,9 @@ export const MANIFEST_FILE = path.join(CAPTCHA_DIR, 'manifest.json');
 
 export interface PoolImage {
   id: string;
-  /** Catégories bien visibles : bonne réponse. */
+  /** Categories clearly visible: a right answer. */
   strong: string[];
-  /** Catégories présentes même en petit : ni bonne ni mauvaise réponse. */
+  /** Categories present even if small: neither a right nor a wrong answer. */
   weak: string[];
   author?: string;
   license?: string;
@@ -20,7 +20,7 @@ export interface PoolImage {
 export interface Manifest {
   version: 1;
   createdAt: string;
-  classes: { key: string; prompt: string; count: number }[];
+  classes: { key: string; count: number }[];
   images: PoolImage[];
 }
 

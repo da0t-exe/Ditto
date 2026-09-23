@@ -2,7 +2,7 @@ import { EmbedBuilder, MessageFlags, type MessageComponentInteraction, type Repl
 
 export type Replyable = RepliableInteraction | MessageComponentInteraction;
 
-// Mêmes teintes que les ronds de couleur Discord.
+// Same hues as Discord's coloured circle emoji.
 export const COLOR = {
   primary: 0x55acee,
   success: 0x78b159,
@@ -25,7 +25,7 @@ export async function replyError(i: Replyable, text: string) {
   else await i.reply(payload);
 }
 
-/** Sépare l'emoji de tête d'un nom de rôle : « 🔴 Rouge » → { emoji: '🔴', label: 'Rouge' }. */
+/** Splits a leading emoji off a role name: « 🔴 Red » → { emoji: '🔴', label: 'Red' }. */
 export function splitEmoji(name: string) {
   const m = /^(\p{Extended_Pictographic}️?)\s*(.*)$/u.exec(name);
   return m ? { emoji: m[1], label: m[2] || name } : { emoji: null, label: name };
@@ -33,7 +33,7 @@ export function splitEmoji(name: string) {
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Exécute fn sur items avec au plus `concurrency` appels en vol. */
+/** Runs fn over items with at most `concurrency` calls in flight. */
 export async function pool<T>(items: T[], concurrency: number, fn: (item: T) => Promise<void>) {
   let next = 0;
   const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
@@ -42,11 +42,11 @@ export async function pool<T>(items: T[], concurrency: number, fn: (item: T) => 
   await Promise.all(workers);
 }
 
-/** « 30m », « 2h », « 1h30 », « 45 » (minutes) → millisecondes. */
+/** « 30m », « 2h », « 1h30 », « 45 » (minutes) → milliseconds. */
 export function parseDuration(input: string): number | null {
   const s = input.trim().toLowerCase().replace(/\s+/g, '');
   if (/^\d+$/.test(s)) return Number(s) * 60_000;
-  const m = /^(?:(\d+)j)?(?:(\d+)h)?(?:(\d+)(?:m|min)?)?$/.exec(s);
+  const m = /^(?:(\d+)[dj])?(?:(\d+)h)?(?:(\d+)(?:m|min)?)?$/.exec(s);
   if (!m || !(m[1] || m[2] || m[3])) return null;
   const ms = (Number(m[1] ?? 0) * 24 * 60 + Number(m[2] ?? 0) * 60 + Number(m[3] ?? 0)) * 60_000;
   return ms > 0 ? ms : null;

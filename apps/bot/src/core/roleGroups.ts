@@ -1,14 +1,14 @@
 import type { Guild, Role } from 'discord.js';
 
-/** Un rôle dont le nom commence par « ━ » sert de titre à tous les rôles placés sous lui. */
-export const isSeparator = (role: Role) => role.name.startsWith('━');
+/** A role whose name starts with a line (━ ─ ═ ▬) is the title of every role below it. */
+export const isSeparator = (role: Role) => /^[━─═▬]/.test(role.name);
 
 export interface RoleGroup {
   separator: Role;
   roles: Role[];
 }
 
-/** Découpe la liste des rôles en étages, du haut vers le bas. */
+/** Splits the role list into tiers, top to bottom. */
 export function roleGroups(guild: Guild): RoleGroup[] {
   const sorted = [...guild.roles.cache.values()]
     .filter((r) => r.id !== guild.id)
