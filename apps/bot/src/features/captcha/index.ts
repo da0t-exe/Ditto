@@ -19,7 +19,6 @@ import { logTo } from '../../core/logs.js';
 import { isPrivileged, requirePrivileged } from '../../core/perms.js';
 import type { Feature } from '../../core/types.js';
 import { COLOR, embed, ok, replyError } from '../../core/ui.js';
-import { pickerView } from '../roles/picker.js';
 import { buildPool } from './build.js';
 import { promptFor } from './classes.js';
 import { makeGrid } from './grid.js';
@@ -184,7 +183,8 @@ async function succeed(i: ButtonInteraction<'cached'>, s: Session, lang: Lang) {
   closeSession(s);
   logTo(i.guild, `✅ **${member.user.username}** passed the captcha`, `✅ **${member.user.username}** a réussi le captcha`);
   return i.editReply({
-    ...pickerView(member, lang, tr(lang, '✅ **Verified — welcome!**\n', '✅ **Vérification réussie, bienvenue !**\n')),
+    embeds: [embed(COLOR.success, tr(lang, `✅ **Verified — welcome to ${i.guild.name}!**`, `✅ **Vérification réussie, bienvenue sur ${i.guild.name} !**`))],
+    components: [],
     attachments: [],
   });
 }

@@ -25,12 +25,6 @@ export async function replyError(i: Replyable, text: string) {
   else await i.reply(payload);
 }
 
-/** Splits a leading emoji off a role name: « 🔴 Red » → { emoji: '🔴', label: 'Red' }. */
-export function splitEmoji(name: string) {
-  const m = /^(\p{Extended_Pictographic}️?)\s*(.*)$/u.exec(name);
-  return m ? { emoji: m[1], label: m[2] || name } : { emoji: null, label: name };
-}
-
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Runs fn over items with at most `concurrency` calls in flight. */

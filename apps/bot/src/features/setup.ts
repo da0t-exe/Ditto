@@ -21,17 +21,17 @@ import { COLOR } from '../core/ui.js';
 import { ensurePanel } from './captcha/index.js';
 import { prepareRooms } from './voice/rooms.js';
 
-type Page = 'verify' | 'quarantine' | 'roles' | 'voice';
-const PAGES: Page[] = ['verify', 'quarantine', 'roles', 'voice'];
+type Page = 'verify' | 'quarantine' | 'staff' | 'voice';
+const PAGES: Page[] = ['verify', 'quarantine', 'staff', 'voice'];
 
 type RoleField = 'memberRole' | 'pendingRole' | 'quarantineRole';
-type RoleListField = 'staffRoles' | 'colorRoles' | 'gameRoles';
+type RoleListField = 'staffRoles';
 type ChannelField = 'verifyChannel' | 'logChannel';
 
 const PAGE_LABEL: Record<Page, [string, string]> = {
   verify: ['Verification', 'Vérification'],
   quarantine: ['Quarantine', 'Quarantaine'],
-  roles: ['Roles', 'Rôles'],
+  staff: ['Staff', 'Staff'],
   voice: ['Voice & logs', 'Vocal & logs'],
 };
 
@@ -46,11 +46,9 @@ const PAGE_HELP: Record<Page, [string, string]> = {
     'Members brought in by a member-pushing bot get the **quarantine role** instead of the captcha. Give that role no access at all and they never see the server.',
     'Les membres amenés par un bot de recrutement reçoivent le **rôle de quarantaine** au lieu du captcha. Ne donne aucun accès à ce rôle : ils ne verront jamais le serveur.',
   ],
-  roles: [
-    '**Staff** roles can use every Ditto command. **Colour** and **game** roles appear in the picker after the captcha and in `/roles`.\n\n' +
-      'Tier titles: a role named like `━━ Games ━━` titles the roles below it, and Ditto shows it only on members who hold one of them.',
-    'Les rôles **staff** peuvent utiliser toutes les commandes de Ditto. Les rôles de **couleur** et de **jeux** apparaissent dans le menu après le captcha et dans `/roles`.\n\n' +
-      'Rôles-titres : un rôle nommé comme `━━ Jeux ━━` sert de titre aux rôles placés sous lui, et Ditto ne l’affiche que sur les membres qui en ont un.',
+  staff: [
+    '**Staff** roles can use every Ditto command, including `/setup` and `/captcha`. Administrators and the server owner always can.',
+    'Les rôles **staff** peuvent utiliser toutes les commandes de Ditto, dont `/setup` et `/captcha`. Les administrateurs et le propriétaire du serveur le peuvent toujours.',
   ],
   voice: [
     '**Rooms** go back to their original name, limit and permissions when they empty; the first person in owns the room and customises it with `/room`. The **log channel** receives joins, leaves, moves and moderation.',
@@ -107,10 +105,8 @@ function view(guild: Guild, lang: Lang, page: Page, notice?: string) {
     const known = cfg.quarantineBots.filter((b) => guild.members.cache.has(b));
     if (known.length) bots.setDefaultUsers(known);
     rows.push(row(bots));
-  } else if (page === 'roles') {
+  } else if (page === 'staff') {
     rows.push(roleSelect('staffRoles', L('Staff roles', 'Rôles staff'), 25));
-    rows.push(roleSelect('colorRoles', L('Colour roles', 'Rôles de couleur'), 25));
-    rows.push(roleSelect('gameRoles', L('Game roles', 'Rôles de jeux'), 25));
   } else {
     rows.push(channelSelect('rooms', L('Rooms that reset when empty', 'Salles qui se réinitialisent'), [ChannelType.GuildVoice], 25));
     rows.push(channelSelect('logChannel', L('Log channel', 'Salon de logs'), TEXT, 1));
@@ -176,7 +172,7 @@ function view(guild: Guild, lang: Lang, page: Page, notice?: string) {
 function checkReach(guild: Guild, cfg: GuildConfig, lang: Lang) {
   const top = guild.members.me?.roles.highest;
   if (!top) return [];
-  const ids = [cfg.memberRole, cfg.pendingRole, cfg.quarantineRole, ...cfg.colorRoles, ...cfg.gameRoles].filter((x): x is string => !!x);
+  const ids = [cfg.memberRole, cfg.pendingRole, cfg.quarantineRole].filter((x): x is string => !!x);
   const blocked = ids.map((id) => guild.roles.cache.get(id)).filter((r) => r && top.comparePositionTo(r) <= 0);
   if (!blocked.length) return [];
   const names = blocked.map((r) => `<@&${r!.id}>`).join(' ');
@@ -196,7 +192,7 @@ async function afterChange(guild: Guild, fields: string[]) {
 }
 
 const SINGLE = new Set(['memberRole', 'pendingRole', 'quarantineRole', 'verifyChannel', 'logChannel']);
-const LIST = new Set(['staffRoles', 'colorRoles', 'gameRoles', 'rooms', 'quarantineBots']);
+const LIST = new Set(['staffRoles', 'rooms', 'quarantineBots']);
 
 export const setupFeature: Feature = {
   name: 'setup',

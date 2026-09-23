@@ -1,7 +1,6 @@
-import { ChannelType, type Guild } from 'discord.js';
+import { ChannelType, PermissionFlagsBits, type Guild } from 'discord.js';
 import { db } from './db.js';
 import { log } from './log.js';
-import { roleGroups } from './roleGroups.js';
 
 export interface GuildConfig {
   language: 'auto' | 'en' | 'fr';
@@ -15,8 +14,6 @@ export interface GuildConfig {
   quarantineBots: string[];
   logChannel: string | null;
   staffRoles: string[];
-  colorRoles: string[];
-  gameRoles: string[];
   /** Voice rooms that go back to their original state when they empty. */
   rooms: string[];
   voiceLog: boolean;
@@ -34,8 +31,6 @@ const DEFAULTS: GuildConfig = {
   quarantineBots: [],
   logChannel: null,
   staffRoles: [],
-  colorRoles: [],
-  gameRoles: [],
   rooms: [],
   voiceLog: true,
   autoAfk: true,
@@ -93,9 +88,17 @@ export async function detectConfig(guild: Guild): Promise<Partial<GuildConfig>> 
   const text = (re: RegExp) =>
     guild.channels.cache.find((c) => c.type === ChannelType.GuildText && re.test(norm(c.name)))?.id ?? null;
 
-  const groups = roleGroups(guild);
-  const tier = (re: RegExp) =>
-    groups.find((g) => re.test(norm(g.separator.name)))?.roles.filter((r) => !r.managed).map((r) => r.id) ?? [];
+  // Staff: roles that carry moderation permissions (Administrator passes checks on its own).
+  const MOD = [
+    PermissionFlagsBits.ManageGuild,
+    PermissionFlagsBits.KickMembers,
+    PermissionFlagsBits.BanMembers,
+    PermissionFlagsBits.ModerateMembers,
+    PermissionFlagsBits.MoveMembers,
+  ];
+  const staffRoles = roles
+    .filter((r) => !r.permissions.has(PermissionFlagsBits.Administrator) && MOD.some((p) => r.permissions.has(p, false)))
+    .map((r) => r.id);
 
   const afk = guild.afkChannelId;
   const afkParent = afk ? guild.channels.cache.get(afk)?.parentId : null;
@@ -112,9 +115,7 @@ export async function detectConfig(guild: Guild): Promise<Partial<GuildConfig>> 
     quarantineRole,
     quarantineBots: quarantineRole ? await findQuarantineBots(guild, quarantineRole) : [],
     logChannel: text(/\blogs?\b/),
-    staffRoles: tier(/\b(staff|team|equipe|moderation)\b/),
-    colorRoles: tier(/\b(colou?rs?|couleurs?)\b/),
-    gameRoles: tier(/\b(games?|jeux?)\b/),
+    staffRoles,
     rooms,
   };
 }

@@ -4,9 +4,9 @@
 
 # Ditto
 
-Voice tools, a picture captcha and tiered roles for Discord.
+Voice tools and a picture captcha for Discord.
 
-<a href="https://github.com/da0t-exe/Ditto/releases"><img src="./assets/badges/version.svg" alt="version 0.2.0" /></a>
+<a href="https://github.com/da0t-exe/Ditto/releases"><img src="./assets/badges/version.svg" alt="version 0.3.0" /></a>
 <img src="./assets/badges/node.svg" alt="node 20+" />
 <img src="./assets/badges/discordjs.svg" alt="discord.js 14" />
 <a href="LICENSE"><img src="./assets/badges/license.svg" alt="license MIT" /></a>
@@ -14,9 +14,8 @@ Voice tools, a picture captcha and tiered roles for Discord.
 </div>
 
 Ditto looks after the voice side of a server and the door in front of it: a
-picture captcha for newcomers, roles that read cleanly on a profile, and voice
-tools for moderators. It speaks **English and French**, and everything is set
-up from Discord with `/setup`.
+picture captcha for newcomers, and voice tools for moderators. It speaks
+**English and French**, and everything is set up from Discord with `/setup`.
 
 > Music is on the way. It will run on Lavalink and is not in this version yet.
 
@@ -39,14 +38,6 @@ lights"* — with nine buttons laid out like the grid.
 - **Quarantine:** members brought in by a member-pushing bot are recognised
   from Discord's join source and get a quarantine role instead.
 
-### 🎨 Roles
-
-- After the captcha, members pick a **colour** and their **games**; `/roles`
-  brings the menus back later.
-- **Tier titles:** name a role like `━━ Games ━━` and it titles every role
-  below it. Ditto shows the title only on members who hold a role of that tier,
-  so profiles read as tidy floors with no empty headings.
-
 ### 🔊 Voice
 
 - Move, gather, split, disconnect and "shake" members across channels.
@@ -67,7 +58,6 @@ lights"* — with nine buttons laid out like the grid.
 | `/captcha reset <member>` | Clear a member's misses and timeout | Staff |
 | `/captcha panel` | Post the Verify panel again | Staff |
 | `/captcha reload` | Reload the photo pool | Staff |
-| `/roles` | Pick your colour and games | Members |
 | `/room name · limit · lock · unlock · invite · transfer` | Customise the room you own | Room owner |
 | `/move to [member] [role] [from]` | Move one member, everyone in voice with a role, or a whole channel | Move Members |
 | `/gather to` | Pull everyone in voice into one channel, with a button to send them back | Move Members |
@@ -100,7 +90,7 @@ Discord clients see French command options (`/move vers:` instead of `to:`).
    |---|---|
    | Verification | Member role, pending role, verification channel |
    | Quarantine | Quarantine role, and the bots whose arrivals go there |
-   | Roles | Staff, colour and game roles |
+   | Staff | Roles allowed to use every Ditto command |
    | Voice & logs | Rooms, log channel, voice log and auto-AFK, language |
 
    **Auto-detect** fills empty settings from common English and French names
@@ -162,20 +152,18 @@ apps/bot/src/
 │   ├── dispatch.ts     Routes commands and buttons to features
 │   ├── i18n.ts         English / French text and command localisations
 │   ├── perms.ts        Owner, staff and Move Members checks
-│   ├── roleGroups.ts   Splits the role list into tiers
 │   ├── logs.ts         Batched log-channel messages
 │   └── ui.ts           Embeds, colours, small helpers
 ├── features/
 │   ├── setup.ts        The /setup panel
 │   ├── captcha/        Photo pool builder, grid renderer, verification flow
-│   ├── roles/          Colour and game picker, tier titles
 │   └── voice/          Voice commands, locks, rooms, auto-AFK, voice log
 └── scripts/            captcha:fetch, selftest
 ```
 
 - **Features** each export their slash commands, button and menu handlers,
   event listeners and a per-server start hook. Buttons carry ids like
-  `captcha:ok` or `setup:page:roles`, and the dispatcher routes them by prefix.
+  `captcha:ok` or `setup:page:staff`, and the dispatcher routes them by prefix.
 - **Captcha pipeline:** `build.ts` reads the Open Images annotations, keeps
   photos where the object is large, crops each to a square around it and
   records which categories are clearly visible and which are only hinted at.

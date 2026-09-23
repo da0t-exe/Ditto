@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
 import { env } from '../env.js';
-import { parseDuration, splitEmoji } from '../core/ui.js';
+import { parseDuration } from '../core/ui.js';
 import { promptFor } from '../features/captcha/classes.js';
 
 if (!process.env.DATA_DIR) {
@@ -22,8 +22,6 @@ assert.equal(parseDuration('2h'), 2 * 3600_000);
 assert.equal(parseDuration('1h30'), 90 * 60_000);
 assert.equal(parseDuration('45'), 45 * 60_000);
 assert.equal(parseDuration('abc'), null);
-assert.deepEqual(splitEmoji('🔴 Red'), { emoji: '🔴', label: 'Red' });
-assert.deepEqual(splitEmoji('Minecraft'), { emoji: null, label: 'Minecraft' });
 assert.equal(promptFor('car', 'en'), 'cars');
 assert.equal(promptFor('car', 'fr'), 'des voitures');
 console.log('helpers OK');
