@@ -31,6 +31,8 @@ const VERSIONS = path.join(DIR, 'versions.json');
 const PORT = Number(process.env.LAVALINK_PORT ?? 2333);
 const MEMORY = process.env.LAVALINK_MEMORY ?? '512M';
 const GITHUB = 'https://api.github.com/repos';
+/** Auto-updates stay on this major version: a new major could break lavalink-client. */
+const LAVALINK_MAJOR = 4;
 
 interface Versions {
   lavalink?: string;
@@ -45,13 +47,30 @@ const readVersions = (): Versions => {
   }
 };
 
-async function latestRelease(repo: string) {
-  const res = await fetch(`${GITHUB}/${repo}/releases/latest`, {
+interface Release {
+  tag_name: string;
+  draft: boolean;
+  prerelease: boolean;
+  assets: { name: string; browser_download_url: string }[];
+}
+
+async function github<T>(route: string): Promise<T> {
+  const res = await fetch(`${GITHUB}/${route}`, {
     headers: { 'User-Agent': 'Ditto (https://github.com/da0t-exe/Ditto)', Accept: 'application/vnd.github+json' },
     signal: AbortSignal.timeout(15_000),
   });
-  if (!res.ok) throw new Error(`${repo}: HTTP ${res.status}`);
-  return (await res.json()) as { tag_name: string; assets: { name: string; browser_download_url: string }[] };
+  if (!res.ok) throw new Error(`${route}: HTTP ${res.status}`);
+  return (await res.json()) as T;
+}
+
+const latestRelease = (repo: string) => github<Release>(`${repo}/releases/latest`);
+
+/** Newest stable Lavalink of the pinned major version. */
+async function latestLavalink(): Promise<Release> {
+  const releases = await github<Release[]>('lavalink-devs/Lavalink/releases?per_page=50');
+  const match = releases.find((r) => !r.draft && !r.prerelease && r.tag_name.startsWith(`${LAVALINK_MAJOR}.`));
+  if (!match) throw new Error(`no Lavalink ${LAVALINK_MAJOR}.x release found`);
+  return match;
 }
 
 async function download(url: string, dest: string) {
@@ -117,7 +136,7 @@ async function ensureJava() {
 async function fetchLatest(): Promise<boolean> {
   const current = readVersions();
   const next: Versions = { ...current };
-  const lavalink = await latestRelease('lavalink-devs/Lavalink');
+  const lavalink = await latestLavalink();
   if (lavalink.tag_name !== current.lavalink || !fs.existsSync(JAR)) {
     const want = isMusl() ? 'Lavalink-musl.jar' : 'Lavalink.jar';
     const asset = lavalink.assets.find((a) => a.name === want) ?? lavalink.assets.find((a) => a.name === 'Lavalink.jar');
@@ -211,9 +230,26 @@ async function waitReady(node: NodeConfig, timeoutMs = 90_000) {
   throw new Error('Lavalink did not start in time');
 }
 
+/**
+ * Environment for Lavalink without the variables Spring Boot would read as its own
+ * settings — Pterodactyl sets SERVER_PORT to the server's public port, for one.
+ */
+function lavalinkEnv() {
+  const clean: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (!/^(SERVER|SPRING|LAVALINK|LOGGING|PLUGINS|METRICS|SENTRY|MANAGEMENT)_/i.test(k)) clean[k] = v;
+  }
+  return clean;
+}
+
 function launch(java: string) {
   stopping = false;
-  child = spawn(java, [`-Xmx${MEMORY}`, '-jar', JAR], { cwd: DIR, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  child = spawn(java, [`-Xmx${MEMORY}`, '-jar', JAR, `--server.port=${PORT}`, '--server.address=127.0.0.1'], {
+    cwd: DIR,
+    env: lavalinkEnv(),
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
   const relay = (d: Buffer) => {
     for (const line of String(d).split('\n')) {
       if (/\b(WARN|ERROR)\b|Exception|Lavalink is ready/.test(line)) log.info('lavalink', line.replace(/^.*?(WARN|ERROR|INFO)\s+/, '$1 ').trim().slice(0, 300));
@@ -261,7 +297,10 @@ export async function startLavalink(isIdle: () => boolean): Promise<NodeConfig> 
   const node: NodeConfig = { host: '127.0.0.1', port: PORT, password: password(), secure: false };
   writeConfig(node.password);
   launch(java);
-  const version = await waitReady(node);
+  const version = await waitReady(node).catch((err) => {
+    stop();
+    throw err;
+  });
   const { youtube } = readVersions();
   log.info('music', `Lavalink ${version} ready${youtube ? ` (YouTube plugin ${youtube})` : ''}`);
 
