@@ -1,4 +1,5 @@
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -8,9 +9,9 @@ import { env } from '../../env.js';
 import { log } from '../../core/log.js';
 
 /**
- * yt-dlp reads every source (YouTube, SoundCloud, TikTok, Twitch…) and FFmpeg turns
- * it into raw audio for Discord. yt-dlp is downloaded into data/bin on first use and
- * updated once a day, because YouTube changes often.
+ * yt-dlp reads link metadata, finds direct audio addresses when Lavalink's YouTube
+ * source fails, and fetches clips from sites Lavalink does not know. It is downloaded
+ * into data/bin on first use and updated once a day, because YouTube changes often.
  */
 const BIN_DIR = path.join(env.dataDir, 'bin');
 const RELEASE = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/';
@@ -85,53 +86,55 @@ export async function runYtDlp(args: string[], timeoutMs = 25_000): Promise<stri
   });
 }
 
-export interface AudioStream {
-  stream: Readable;
-  kill(): void;
+const CACHE_DIR = path.join(env.dataDir, 'cache', 'audio');
+
+/** The direct media address of a page (YouTube fallback: Lavalink streams it over HTTP from the same host). */
+export async function directAudioUrl(url: string): Promise<string> {
+  const out = await runYtDlp(['-g', '--no-playlist', '-f', 'bestaudio/best', url]);
+  const first = out.split('\n').find((l) => l.startsWith('http'));
+  if (!first) throw new Error('no audio address');
+  return first.trim();
 }
 
-/** yt-dlp → FFmpeg → 48 kHz stereo PCM, ready for an inline-volume audio resource. */
-export async function openStream(url: string): Promise<AudioStream> {
-  const bin = await ensureYtDlp();
-  const children: ChildProcess[] = [];
-  const source = spawn(
-    bin,
+/**
+ * Downloads the audio of a short clip (TikTok, X, Instagram…) that Lavalink cannot read
+ * by itself; Lavalink then plays the local file. Returns the file path.
+ */
+export async function downloadAudio(url: string): Promise<string> {
+  fs.mkdirSync(CACHE_DIR, { recursive: true });
+  const name = crypto.createHash('sha1').update(url).digest('hex').slice(0, 16);
+  const out = await runYtDlp(
     [
-      ...extraArgs,
-      '--no-warnings',
-      '--quiet',
       '--no-playlist',
-      '--no-part',
       '-f',
-      'bestaudio[acodec=opus]/bestaudio/best',
+      'bestaudio/best',
+      '--max-filesize',
+      '80M',
       '--ffmpeg-location',
       ffmpegPath(),
       '-o',
-      '-',
+      path.join(CACHE_DIR, `${name}.%(ext)s`),
+      '--print',
+      'after_move:filepath',
       url,
     ],
-    { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }
+    180_000
   );
-  const ffmpeg = spawn(
-    ffmpegPath(),
-    ['-loglevel', 'error', '-i', 'pipe:0', '-vn', '-f', 's16le', '-ar', '48000', '-ac', '2', 'pipe:1'],
-    { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }
-  );
-  children.push(source, ffmpeg);
-  source.stdout.pipe(ffmpeg.stdin);
-  // A closed pipe on skip is expected; anything else is logged.
-  ffmpeg.stdin.on('error', () => {});
-  source.stderr.on('data', (d) => {
-    const line = String(d).trim();
-    if (line && !/Broken pipe/i.test(line)) log.warn('music', `yt-dlp: ${line.split('\n').pop()}`);
-  });
-  source.on('error', (err) => log.warn('music', `yt-dlp: ${err.message}`));
-  ffmpeg.on('error', (err) => log.warn('music', `ffmpeg: ${err.message}`));
+  const file = out.trim().split('\n').pop()?.trim();
+  if (!file || !fs.existsSync(file)) throw new Error('download failed');
+  return file;
+}
 
-  return {
-    stream: ffmpeg.stdout,
-    kill: () => {
-      for (const c of children) if (c.exitCode === null) c.kill('SIGKILL');
-    },
-  };
+/** Removes downloaded clips older than an hour. */
+export function sweepAudioCache() {
+  if (!fs.existsSync(CACHE_DIR)) return;
+  const limit = Date.now() - 3600_000;
+  for (const f of fs.readdirSync(CACHE_DIR)) {
+    const full = path.join(CACHE_DIR, f);
+    try {
+      if (fs.statSync(full).mtimeMs < limit) fs.rmSync(full, { force: true });
+    } catch {
+      /* in use or gone */
+    }
+  }
 }

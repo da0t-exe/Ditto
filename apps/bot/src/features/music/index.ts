@@ -13,9 +13,10 @@ import { canModerateVoice } from '../../core/perms.js';
 import type { Command, Feature } from '../../core/types.js';
 import { COLOR, embed, ok, replyError } from '../../core/ui.js';
 import { cleanTitle, findLyrics } from './lyrics.js';
-import { GuildMusic, type LoopMode, type Track } from './player.js';
+import { initEngine, lavalink } from './engine.js';
+import { GuildMusic, type FilterName, type LoopMode, type Track } from './player.js';
 import { rememberPick, resolveInput, searchMusic, UserError } from './search.js';
-import { ensureYtDlp } from './tools.js';
+import { ensureYtDlp, sweepAudioCache } from './tools.js';
 import { controls, formatTime, nowPlayingEmbed, queueEmbed, trackLine } from './views.js';
 
 const MAX_PLAYLIST = 200;
@@ -145,6 +146,12 @@ const play: Command = {
     const lang = userLang(i);
     const channel = i.member.voice.channel;
     if (!channel) return replyError(i, tr(lang, 'Join a voice channel first.', 'Rejoins d’abord un salon vocal.'));
+    try {
+      lavalink();
+    } catch (err) {
+      if (err instanceof UserError) return replyError(i, tr(lang, err.en, err.fr));
+      throw err;
+    }
     const existing = players.get(i.guildId);
     if (existing?.current && existing.channelId && existing.channelId !== channel.id && !canModerateVoice(i.member)) {
       return replyError(i, tr(lang, `I’m already playing in <#${existing.channelId}>.`, `Je joue déjà dans <#${existing.channelId}>.`));
@@ -335,6 +342,62 @@ const lyrics: Command = {
   },
 };
 
+/** « 1:30 », « 1:02:03 » or « 90 » → seconds. */
+function parseTime(text: string) {
+  const t = text.trim();
+  if (/^\d+$/.test(t)) return Number(t);
+  const m = /^(?:(\d+):)?(\d{1,2}):(\d{2})$/.exec(t);
+  return m ? Number(m[1] ?? 0) * 3600 + Number(m[2]) * 60 + Number(m[3]) : null;
+}
+
+const seek: Command = {
+  data: loc(new SlashCommandBuilder(), 'seek', ['Jump to a moment of the track', 'Aller à un moment du titre']).addStringOption((o) =>
+    loc(o, ['time', 'moment'], ['e.g. 1:30 or 90 (seconds)', 'Ex. 1:30 ou 90 (secondes)']).setRequired(true)
+  ),
+  async run(i) {
+    const music = await listenerOf(i);
+    if (!music) return;
+    const lang = userLang(i);
+    const at = parseTime(i.options.getString('time', true));
+    const t = music.current;
+    if (at === null) return replyError(i, tr(lang, 'Invalid time. Examples: `1:30`, `90`.', 'Moment invalide. Exemples : `1:30`, `90`.'));
+    if (!t || t.live) return replyError(i, tr(lang, 'This track cannot be sought.', 'On ne peut pas avancer dans ce titre.'));
+    if (t.duration && at >= t.duration) return replyError(i, tr(lang, `The track is ${formatTime(t.duration)} long.`, `Le titre dure ${formatTime(t.duration)}.`));
+    await music.seek(at);
+    void refreshNowPlaying(music);
+    return i.reply({ embeds: [ok(tr(lang, `Jumped to ${formatTime(at)}.`, `Direction ${formatTime(at)}.`))] });
+  },
+};
+
+const FILTERS: { value: FilterName; en: string; fr: string }[] = [
+  { value: 'none', en: 'None', fr: 'Aucun' },
+  { value: 'bassboost', en: 'Bass boost', fr: 'Basses renforcées' },
+  { value: 'nightcore', en: 'Nightcore', fr: 'Nightcore' },
+  { value: 'vaporwave', en: 'Vaporwave', fr: 'Vaporwave' },
+  { value: '8d', en: '8D', fr: '8D' },
+  { value: 'karaoke', en: 'Karaoke', fr: 'Karaoké' },
+];
+
+const filter: Command = {
+  data: loc(new SlashCommandBuilder(), 'filter', ['Apply an audio filter', 'Appliquer un filtre audio']).addStringOption((o) =>
+    loc(o, ['effect', 'effet'], ['Filter', 'Filtre'])
+      .setRequired(true)
+      .addChoices(...FILTERS.map((f) => ({ name: f.en, name_localizations: { fr: f.fr }, value: f.value })))
+  ),
+  async run(i) {
+    const music = await listenerOf(i);
+    if (!music) return;
+    const lang = userLang(i);
+    const choice = FILTERS.find((f) => f.value === i.options.getString('effect', true))!;
+    await i.deferReply();
+    await music.setFilter(choice.value);
+    void refreshNowPlaying(music);
+    return i.editReply({
+      embeds: [ok(choice.value === 'none' ? tr(lang, 'Filters removed.', 'Filtres retirés.') : tr(lang, `Filter: ${choice.en}.`, `Filtre : ${choice.fr}.`))],
+    });
+  },
+};
+
 // ---------- Now-playing buttons ----------
 
 async function onButton(i: MessageComponentInteraction<'cached'>, [action]: string[]) {
@@ -370,11 +433,18 @@ async function onButton(i: MessageComponentInteraction<'cached'>, [action]: stri
 
 export const musicFeature: Feature = {
   name: 'music',
-  commands: [play, skip, stop, pause, resume, nowplaying, queue, volume, loop, shuffle, remove, clear, lyrics],
+  commands: [play, skip, stop, pause, resume, nowplaying, queue, volume, loop, shuffle, remove, clear, seek, filter, lyrics],
   components: { music: onButton },
   init(client) {
-    // Fetch yt-dlp now so the first /play is quick.
+    initEngine(client, {
+      isIdle: () => ![...players.values()].some((m) => m.current),
+      onTrackEnd: (guildId) => players.get(guildId)?.onEnded(),
+      onTrackError: (guildId, message) => log.warn('music', `${guildId}: ${message}`),
+      onPlayerGone: (guildId) => players.get(guildId)?.destroy(true),
+    });
+    // Fetch yt-dlp now so the first link is quick; clean downloaded clips every hour.
     ensureYtDlp().catch((err) => log.warn('music', `yt-dlp not ready: ${err.message}`));
+    setInterval(sweepAudioCache, 3600_000).unref();
 
     // Leave when everyone else has left.
     client.on(Events.VoiceStateUpdate, (oldState, newState) => {

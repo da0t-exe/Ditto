@@ -52,8 +52,11 @@ export function nowPlayingEmbed(music: GuildMusic, lang: Lang) {
       text: [
         `${tr(lang, 'Volume', 'Volume')} ${music.volume}%`,
         tr(lang, ...LOOP_LABEL[music.loop]),
+        music.filter !== 'none' ? `🎛️ ${music.filter}` : null,
         tr(lang, `${music.queue.length} in queue`, `${music.queue.length} en file`),
-      ].join(' · '),
+      ]
+        .filter(Boolean)
+        .join(' · '),
     });
   if (t.thumbnail) e.setThumbnail(t.thumbnail);
   return e;

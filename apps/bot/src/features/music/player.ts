@@ -1,48 +1,65 @@
-import {
-  AudioPlayerStatus,
-  createAudioPlayer,
-  createAudioResource,
-  entersState,
-  joinVoiceChannel,
-  NoSubscriberBehavior,
-  StreamType,
-  VoiceConnectionStatus,
-  type AudioPlayer,
-  type AudioResource,
-  type VoiceConnection,
-} from '@discordjs/voice';
+import fs from 'node:fs';
 import type { Guild, Message, VoiceBasedChannel } from 'discord.js';
 import { log } from '../../core/log.js';
-import { ensurePlayable, type Found } from './search.js';
-import { openStream, type AudioStream } from './tools.js';
+import { lavalink, loadEncoded, type LavalinkPlayer } from './engine.js';
+import { ensurePlayable, UserError, type Found, type Source } from './search.js';
+import { directAudioUrl, downloadAudio } from './tools.js';
 
 export interface Track extends Found {
   requesterId: string;
 }
 
 export type LoopMode = 'off' | 'track' | 'queue';
+export type FilterName = 'none' | 'bassboost' | 'nightcore' | 'vaporwave' | '8d' | 'karaoke';
 
 const IDLE_LEAVE_MS = 3 * 60_000; // queue finished
 const EMPTY_LEAVE_MS = 60_000; // nobody left in the channel
+
+/** Short clips from these sites are downloaded first: Lavalink cannot read their pages. */
+const DOWNLOAD_FIRST: Source[] = ['tiktok', 'x', 'instagram'];
+
+/**
+ * Turns a track into something Lavalink can play, trying in order: Lavalink on the page
+ * itself, the direct media address found by yt-dlp, then a downloaded copy.
+ */
+async function toLavalink(track: Track): Promise<{ encoded: string; file?: string }> {
+  const viaDownload = async () => {
+    const file = await downloadAudio(track.url);
+    const r = await loadEncoded(file);
+    if (!r.encoded) throw new Error(r.error ?? 'unreadable file');
+    return { encoded: r.encoded, file };
+  };
+  if (DOWNLOAD_FIRST.includes(track.source)) return viaDownload();
+
+  const direct = await loadEncoded(track.url);
+  if (direct.encoded) return { encoded: direct.encoded };
+  log.warn('music', `Lavalink could not load ${track.url} (${direct.error}), trying yt-dlp`);
+
+  try {
+    const r = await loadEncoded(await directAudioUrl(track.url));
+    if (r.encoded) return { encoded: r.encoded };
+  } catch {
+    /* next fallback */
+  }
+  if (!track.live && (track.duration ?? 0) <= 20 * 60) return viaDownload();
+  throw new UserError('This track could not be loaded.', 'Ce titre n’a pas pu être chargé.');
+}
 
 /** Everything Ditto plays in one server. */
 export class GuildMusic {
   readonly queue: Track[] = [];
   current: Track | null = null;
   loop: LoopMode = 'off';
+  filter: FilterName = 'none';
   volume = 60;
-  startedAt = 0;
-  pausedAt = 0;
   /** Where the "now playing" message goes. */
   textChannelId: string | null = null;
   nowPlaying: Message | null = null;
   readonly skipVotes = new Set<string>();
   readonly stopVotes = new Set<string>();
 
-  private connection: VoiceConnection | null = null;
-  private player: AudioPlayer;
-  private resource: AudioResource<Track> | null = null;
-  private audio: AudioStream | null = null;
+  private player: LavalinkPlayer | null = null;
+  private tempFile: string | null = null;
   private idleTimer: NodeJS.Timeout | null = null;
   private emptyTimer: NodeJS.Timeout | null = null;
   private destroyed = false;
@@ -55,53 +72,38 @@ export class GuildMusic {
       onError(music: GuildMusic, track: Track, error: Error): void;
       onDestroy(music: GuildMusic): void;
     }
-  ) {
-    this.player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Pause } });
-    this.player.on(AudioPlayerStatus.Idle, () => void this.advance());
-    this.player.on('error', (err) => {
-      log.warn('music', `${guild.name}: ${err.message}`);
-      if (this.current) this.hooks.onError(this, this.current, err);
-    });
-  }
+  ) {}
 
   get channelId() {
-    return this.connection?.joinConfig.channelId ?? null;
+    return this.player?.voiceChannelId ?? null;
   }
 
   get paused() {
-    return this.player.state.status === AudioPlayerStatus.Paused || this.player.state.status === AudioPlayerStatus.AutoPaused;
+    return this.player?.paused ?? false;
   }
 
   /** Seconds played in the current track. */
   get position() {
-    if (!this.current || !this.startedAt) return 0;
-    const now = this.paused ? this.pausedAt : Date.now();
-    return Math.max(0, Math.floor((now - this.startedAt) / 1000));
+    return this.current ? Math.floor((this.player?.position ?? 0) / 1000) : 0;
   }
 
   async connect(channel: VoiceBasedChannel) {
-    if (this.connection && this.channelId === channel.id) return;
-    this.connection?.destroy();
-    const connection = joinVoiceChannel({
-      channelId: channel.id,
-      guildId: this.guild.id,
-      adapterCreator: this.guild.voiceAdapterCreator,
-      selfDeaf: true,
-    });
-    this.connection = connection;
-    connection.subscribe(this.player);
-    connection.on(VoiceConnectionStatus.Disconnected, async () => {
-      // Moved to another channel: it reconnects on its own. Kicked: clean up.
-      try {
-        await Promise.race([
-          entersState(connection, VoiceConnectionStatus.Signalling, 5000),
-          entersState(connection, VoiceConnectionStatus.Connecting, 5000),
-        ]);
-      } catch {
-        this.destroy();
-      }
-    });
-    await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
+    const manager = lavalink();
+    this.player ??=
+      manager.getPlayer(this.guild.id) ??
+      manager.createPlayer({
+        guildId: this.guild.id,
+        voiceChannelId: channel.id,
+        textChannelId: this.textChannelId ?? undefined,
+        selfDeaf: true,
+        volume: this.volume,
+      });
+    if (this.player.connected && this.player.voiceChannelId !== channel.id) {
+      await this.player.changeVoiceState({ voiceChannelId: channel.id, selfDeaf: true });
+    } else if (!this.player.connected) {
+      this.player.voiceChannelId = channel.id;
+      await this.player.connect();
+    }
   }
 
   /** Adds tracks; starts playing if nothing is. Returns the queue position of the first one (0 = playing now). */
@@ -116,9 +118,14 @@ export class GuildMusic {
     return this.queue.length - tracks.length + 1;
   }
 
+  /** Called by the engine when Lavalink reports the end of a track. */
+  onEnded() {
+    void this.advance();
+  }
+
   private async advance() {
     if (this.destroyed) return;
-    this.stopAudio();
+    this.dropTempFile();
     const previous = this.current;
     this.skipVotes.clear();
     this.stopVotes.clear();
@@ -143,11 +150,10 @@ export class GuildMusic {
     this.current = track;
     try {
       await ensurePlayable(track);
-      this.audio = await openStream(track.url);
-      this.resource = createAudioResource(this.audio.stream, { inputType: StreamType.Raw, inlineVolume: true, metadata: track });
-      this.resource.volume?.setVolume(this.volume / 100);
-      this.player.play(this.resource);
-      this.startedAt = Date.now();
+      const { encoded, file } = await toLavalink(track);
+      this.tempFile = file ?? null;
+      if (!this.player) throw new Error('not connected');
+      await this.player.play({ track: { encoded, requester: track.requesterId }, volume: this.volume });
       this.hooks.onTrackStart(this);
     } catch (err) {
       this.hooks.onError(this, track, err as Error);
@@ -157,32 +163,44 @@ export class GuildMusic {
     }
   }
 
-  private stopAudio() {
-    this.audio?.kill();
-    this.audio = null;
-    this.resource = null;
+  private dropTempFile() {
+    if (this.tempFile) fs.rm(this.tempFile, { force: true }, () => {});
+    this.tempFile = null;
   }
 
   skip() {
-    // Idle fires advance(); a looped track would otherwise start again.
+    // The end event calls advance(); a looped track would otherwise start again.
     if (this.loop === 'track') this.current = null;
-    this.player.stop(true);
+    void this.player?.stopPlaying(false, false).catch(() => {});
   }
 
   pause() {
-    if (this.player.pause()) this.pausedAt = Date.now();
+    if (!this.paused) void this.player?.pause().catch(() => {});
   }
 
   resume() {
-    if (this.paused && this.player.unpause()) {
-      this.startedAt += Date.now() - this.pausedAt;
-      this.pausedAt = 0;
-    }
+    if (this.paused) void this.player?.resume().catch(() => {});
   }
 
   setVolume(level: number) {
     this.volume = level;
-    this.resource?.volume?.setVolume(level / 100);
+    void this.player?.setVolume(level).catch(() => {});
+  }
+
+  async seek(seconds: number) {
+    await this.player?.seek(seconds * 1000);
+  }
+
+  async setFilter(name: FilterName) {
+    const f = this.player?.filterManager;
+    if (!f) return;
+    await f.resetFilters();
+    if (name === 'bassboost') await f.setEQPreset('BassboostMedium');
+    else if (name === 'nightcore') await f.toggleNightcore();
+    else if (name === 'vaporwave') await f.toggleVaporwave();
+    else if (name === '8d') await f.toggleRotation(0.2);
+    else if (name === 'karaoke') await f.toggleKaraoke();
+    this.filter = name;
   }
 
   shuffle() {
@@ -207,21 +225,17 @@ export class GuildMusic {
     this.idleTimer = null;
   }
 
-  destroy() {
+  /** `fromLavalink`: the player is already gone on Lavalink's side. */
+  destroy(fromLavalink = false) {
     if (this.destroyed) return;
     this.destroyed = true;
     this.clearIdle();
     if (this.emptyTimer) clearTimeout(this.emptyTimer);
     this.queue.length = 0;
     this.current = null;
-    this.player.stop(true);
-    this.stopAudio();
-    try {
-      this.connection?.destroy();
-    } catch {
-      /* already gone */
-    }
-    this.connection = null;
+    this.dropTempFile();
+    if (!fromLavalink) void this.player?.destroy('stopped').catch(() => {});
+    this.player = null;
     this.hooks.onDestroy(this);
   }
 }
