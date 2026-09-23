@@ -1,5 +1,5 @@
 import { db } from '../../core/db.js';
-import type { Grid } from './grid.js';
+import type { Challenge } from './grid.js';
 
 export const MAX_FAILURES = 3;
 export const MAX_REFRESH = 3;
@@ -8,7 +8,7 @@ const SESSION_TTL = 10 * 60_000;
 export interface Session {
   guildId: string;
   userId: string;
-  grid: Grid;
+  challenge: Challenge;
   selected: Set<number>;
   refreshes: number;
   test: boolean;
@@ -19,11 +19,11 @@ export interface Session {
 const sessions = new Map<string, Session>();
 const key = (guildId: string, userId: string) => `${guildId}:${userId}`;
 
-export function openSession(guildId: string, userId: string, grid: Grid, test: boolean): Session {
+export function openSession(guildId: string, userId: string, challenge: Challenge, test: boolean): Session {
   const s: Session = {
     guildId,
     userId,
-    grid,
+    challenge,
     selected: new Set(),
     refreshes: 0,
     test,

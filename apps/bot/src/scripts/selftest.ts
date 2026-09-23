@@ -1,6 +1,6 @@
 /**
- * Offline check with no Discord and no download: a stand-in image pool,
- * grid generation, uniqueness, and the small helpers.
+ * Offline check with no Discord and no download: a stand-in photo pool,
+ * square scoring, challenge generation, uniqueness, and the small helpers.
  *   DATA_DIR=<temporary folder> npm run selftest
  */
 import assert from 'node:assert/strict';
@@ -22,52 +22,56 @@ assert.equal(parseDuration('2h'), 2 * 3600_000);
 assert.equal(parseDuration('1h30'), 90 * 60_000);
 assert.equal(parseDuration('45'), 45 * 60_000);
 assert.equal(parseDuration('abc'), null);
-assert.equal(promptFor('car', 'en'), 'cars');
-assert.equal(promptFor('car', 'fr'), 'des voitures');
-console.log('helpers OK');
+assert.equal(promptFor('bus', 'en'), 'buses');
+assert.equal(promptFor('car', 'fr'), 'voitures');
 
-// Stand-in pool: two categories, plain tiles of different colours
-const img = path.join(env.dataDir, 'captcha', 'img');
-fs.mkdirSync(img, { recursive: true });
-const images: { id: string; strong: string[]; weak: string[] }[] = [];
-for (let n = 0; n < 60; n++) {
-  const cls = n % 3 === 0 ? 'car' : n % 3 === 1 ? 'bus' : 'none';
-  const color = cls === 'car' ? '#dd2e44' : cls === 'bus' ? '#fdcb58' : '#55acee';
-  await sharp({ create: { width: 256, height: 256, channels: 3, background: color } })
-    .jpeg()
-    .toFile(path.join(img, `fake${n}.jpg`));
-  images.push({ id: `fake${n}`, strong: cls === 'none' ? [] : [cls], weak: cls === 'none' ? [] : [cls] });
+const { scoreCells, makeChallenge, renderChallenge } = await import('../features/captcha/grid.js');
+
+// A bus filling the lower-left quarter: squares 9, 10, 13, 14 (1-based) are required.
+const quarter = scoreCells([[0, 0.5, 0.5, 1]], []);
+assert.deepEqual(quarter.required, [8, 9, 12, 13]);
+assert.deepEqual(quarter.optional, []);
+// A thin sliver over the next column is optional, not required.
+const sliver = scoreCells([[0, 0.5, 0.52, 1]], []);
+assert.deepEqual(sliver.required, [8, 9, 12, 13]);
+assert.deepEqual(sliver.optional, [10, 14]);
+// A small object sitting in one square is still required there.
+assert.deepEqual(scoreCells([[0.3, 0.3, 0.36, 0.4]], []).required, [5]);
+console.log('square scoring OK');
+
+// Stand-in pool: 40 photos, each with a yellow "bus" and a red "car" at random places.
+const imgDir = path.join(env.dataDir, 'captcha', 'img');
+fs.mkdirSync(imgDir, { recursive: true });
+const images = [];
+for (let n = 0; n < 40; n++) {
+  const bus = [0.05 + Math.random() * 0.3, 0.1 + Math.random() * 0.3, 0.5 + Math.random() * 0.3, 0.55 + Math.random() * 0.3];
+  const car = [0.55, 0.6, 0.9, 0.85];
+  const px = (b: number[]) => b.map((v) => Math.round(v * 512));
+  const [bx0, by0, bx1, by1] = px(bus);
+  const [cx0, cy0, cx1, cy1] = px(car);
+  const svg = `<svg width="512" height="512"><rect width="512" height="512" fill="#9fb8c9"/><rect y="300" width="512" height="212" fill="#555"/>
+    <rect x="${bx0}" y="${by0}" width="${bx1 - bx0}" height="${by1 - by0}" rx="12" fill="#f2c230"/>
+    <rect x="${cx0}" y="${cy0}" width="${cx1 - cx0}" height="${cy1 - cy0}" rx="20" fill="#d23"/></svg>`;
+  await sharp(Buffer.from(svg)).jpeg().toFile(path.join(imgDir, `fake${n}.jpg`));
+  images.push({ id: `fake${n}`, targets: { bus: [bus], car: [car] }, fuzzy: {} });
 }
 fs.writeFileSync(
   path.join(env.dataDir, 'captcha', 'manifest.json'),
-  JSON.stringify({
-    version: 1,
-    createdAt: new Date().toISOString(),
-    classes: [
-      { key: 'car', count: 20 },
-      { key: 'bus', count: 20 },
-    ],
-    images,
-  })
+  JSON.stringify({ version: 2, createdAt: new Date().toISOString(), classes: [{ key: 'bus', count: 40 }, { key: 'car', count: 40 }], images })
 );
 
-const { makeGrid } = await import('../features/captcha/grid.js');
 const hashes = new Set<string>();
-for (let k = 0; k < 50; k++) {
-  const g = await makeGrid();
-  assert.equal(g.tiles.length, 9);
-  assert.ok(g.answer.length >= 3 && g.answer.length <= 5, 'between 3 and 5 right tiles');
-  for (const [idx, id] of g.tiles.entries()) {
-    const im = images.find((x) => x.id === id)!;
-    assert.equal(im.strong.includes(g.target), g.answer.includes(idx), 'answer matches the tiles');
-    if (!g.answer.includes(idx)) assert.ok(!im.weak.includes(g.target), 'no ambiguous wrong tile');
-  }
-  assert.ok(!hashes.has(g.hash), 'grid is unique');
-  hashes.add(g.hash);
+for (let k = 0; k < 40; k++) {
+  const c = await makeChallenge();
+  assert.ok(c.required.length >= 1 && c.required.length <= 12, 'between 1 and 12 squares to tick');
+  assert.ok(!c.required.some((n) => c.optional.includes(n)), 'a square is either required or optional');
+  assert.ok(!hashes.has(c.hash), 'challenge is unique');
+  hashes.add(c.hash);
   if (k === 0) {
-    fs.writeFileSync(path.join(env.dataDir, 'sample-grid.jpg'), g.image);
-    const meta = await sharp(g.image).metadata();
-    console.log(`grid ${meta.width}x${meta.height}, ${g.image.length} bytes, target « ${promptFor(g.target, 'en')} », answer ${g.answer.map((n) => n + 1)}`);
+    const picture = await renderChallenge(c.photo, 'Select all squares with', promptFor(c.target, 'en'), '3 attempts left', 'TEST');
+    fs.writeFileSync(path.join(env.dataDir, 'sample-challenge.jpg'), picture);
+    const meta = await sharp(picture).metadata();
+    console.log(`challenge ${meta.width}x${meta.height}, ${Math.round(picture.length / 1024)} KB, « ${c.target} », tick ${c.required.map((n) => n + 1)}`);
   }
 }
-console.log('50 unique, consistent grids OK');
+console.log('40 unique challenges OK');

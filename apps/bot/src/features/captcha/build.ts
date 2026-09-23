@@ -1,9 +1,9 @@
 /**
- * Builds the captcha image pool from Open Images (Google, photos under CC BY 2.0).
+ * Builds the captcha photo pool from Open Images (Google, photos under CC BY 2.0).
  *
- * Only photos are kept (no drawings), cropped to a square around the object. Each
- * image records the categories that are clearly visible (a right answer) and the
- * ones present even if small (never offered as a wrong answer).
+ * Each photo is cropped to a square around the objects of one category and stored
+ * with the boxes of every captcha object in it, so a 4×4 grid can later tell which
+ * squares contain the object. Drawings are skipped.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -12,7 +12,7 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import sharp from 'sharp';
 import { CAPTCHA_CLASSES } from './classes.js';
-import { CAPTCHA_DIR, IMG_DIR, MANIFEST_FILE, type Manifest, type PoolImage } from './pool.js';
+import { CAPTCHA_DIR, IMG_DIR, MANIFEST_FILE, PHOTO_SIZE, POOL_VERSION, type Box, type Manifest, type PoolImage } from './pool.js';
 
 const CLASSES_URL = 'https://storage.googleapis.com/openimages/v5/class-descriptions-boxable.csv';
 const SUBSETS = [
@@ -29,15 +29,15 @@ const SUBSETS = [
 ];
 
 const PER_CLASS = Number(process.env.CAPTCHA_PER_CLASS ?? 150);
-const MIN_BOX_AREA = 0.04; // share of the original photo the object must fill to be a candidate
-const STRONG = 0.08; // share of the final square to count as a right answer
-const WEAK = 0.002; // below this, the object counts as absent
+const MIN_OBJECT = 0.008; // share of the original photo an object must fill to count
+const MIN_COVER = 0.02; // share of the final square the category must fill
+const MAX_COVER = 0.75; // …and at most, so some squares stay empty
 const MIN_CLASS = 12;
-const OUT = 256;
+const MIN_SOURCE = 360; // smallest usable side, in pixels
 
 const CACHE_DIR = path.join(CAPTCHA_DIR, 'cache');
 
-interface Box {
+interface RawBox {
   mid: string;
   x0: number;
   x1: number;
@@ -96,9 +96,10 @@ async function fetchImage(url: string | undefined): Promise<Buffer | null> {
   }
 }
 
+const area = (b: RawBox) => (b.x1 - b.x0) * (b.y1 - b.y0);
+
 export async function buildPool(logFn: Log = console.log): Promise<Manifest> {
   fs.mkdirSync(CACHE_DIR, { recursive: true });
-  fs.mkdirSync(IMG_DIR, { recursive: true });
 
   // 1. Names → Open Images ids
   const classesFile = await download(CLASSES_URL, path.join(CACHE_DIR, 'classes.csv'), logFn);
@@ -108,20 +109,23 @@ export async function buildPool(logFn: Log = console.log): Promise<Manifest> {
     if (mid && name) midByName.set(name.trim(), mid);
   }
   const mids = (names: string[]) => names.map((n) => midByName.get(n)).filter((m): m is string => !!m);
-  const classes = CAPTCHA_CLASSES.map((c) => ({ ...c, targetMids: mids(c.names), confuserMids: mids(c.confusers) }));
+  const classes = CAPTCHA_CLASSES.map((c) => ({ key: c.key, targetMids: mids(c.names), confuserMids: mids(c.confusers) }));
   const relevant = new Set(classes.flatMap((c) => [...c.targetMids, ...c.confuserMids]));
 
-  // Resume: images already processed are kept.
-  const previous = new Map<string, PoolImage>();
+  // Resume only from a pool in the current format; an older one is thrown away.
+  const kept = new Map<string, PoolImage>();
   try {
     const old = JSON.parse(fs.readFileSync(MANIFEST_FILE, 'utf8')) as Manifest;
-    for (const im of old.images) if (fs.existsSync(path.join(IMG_DIR, `${im.id}.jpg`))) previous.set(im.id, im);
+    if (old.version === POOL_VERSION) {
+      for (const im of old.images) if (fs.existsSync(path.join(IMG_DIR, `${im.id}.jpg`))) kept.set(im.id, im);
+    } else {
+      fs.rmSync(IMG_DIR, { recursive: true, force: true });
+    }
   } catch {
     /* first build */
   }
-
-  const kept = new Map<string, PoolImage>(previous);
-  const countOf = (key: string) => [...kept.values()].filter((im) => im.strong.includes(key)).length;
+  fs.mkdirSync(IMG_DIR, { recursive: true });
+  const countOf = (key: string) => [...kept.values()].filter((im) => im.targets[key]?.length).length;
 
   for (const subset of SUBSETS) {
     const missing = classes.filter((c) => countOf(c.key) < PER_CLASS);
@@ -129,7 +133,7 @@ export async function buildPool(logFn: Log = console.log): Promise<Manifest> {
 
     // 2. Boxes of the objects we care about
     const bboxFile = await download(subset.bbox, path.join(CACHE_DIR, `${subset.name}-bbox.csv`), logFn);
-    const boxes = new Map<string, Box[]>();
+    const boxes = new Map<string, RawBox[]>();
     let header = true;
     for await (const l of lines(bboxFile)) {
       if (header) {
@@ -138,17 +142,23 @@ export async function buildPool(logFn: Log = console.log): Promise<Manifest> {
       }
       // ImageID,Source,LabelName,Confidence,XMin,XMax,YMin,YMax,IsOccluded,IsTruncated,IsGroupOf,IsDepiction,IsInside
       const f = l.split(',');
-      if (!relevant.has(f[2]) || f[11] === '1') continue;
+      if (!relevant.has(f[2])) continue;
       const list = boxes.get(f[0]) ?? [];
       list.push({ mid: f[2], x0: +f[4], x1: +f[5], y0: +f[6], y1: +f[7] });
+      if (f[11] === '1') list.push({ mid: 'depiction', x0: 0, x1: 0, y0: 0, y1: 0 });
       boxes.set(f[0], list);
     }
 
-    // 3. Candidates per category
+    // 3. Candidates per category (photos only)
     const queue: { id: string; key: string }[] = [];
     for (const c of missing) {
       const cands = [...boxes]
-        .filter(([id, bs]) => !kept.has(id) && bs.some((b) => c.targetMids.includes(b.mid) && (b.x1 - b.x0) * (b.y1 - b.y0) >= MIN_BOX_AREA))
+        .filter(
+          ([id, bs]) =>
+            !kept.has(id) &&
+            !bs.some((b) => b.mid === 'depiction') &&
+            bs.some((b) => c.targetMids.includes(b.mid) && area(b) >= MIN_OBJECT)
+        )
         .map(([id]) => id)
         .sort(() => Math.random() - 0.5)
         .slice(0, Math.ceil((PER_CLASS - countOf(c.key)) * 1.6));
@@ -171,7 +181,7 @@ export async function buildPool(logFn: Log = console.log): Promise<Manifest> {
       meta.set(f[0], Object.fromEntries(cols.map((c, i) => [c, f[i]])));
     }
 
-    // 5. Download, crop, label
+    // 5. Download, crop, record boxes
     logFn(`${subset.name}: ${queue.length} candidate images`);
     let done = 0;
     const worker = async () => {
@@ -208,7 +218,7 @@ export async function buildPool(logFn: Log = console.log): Promise<Manifest> {
 
   const counts = classes.map((c) => ({ key: c.key, count: countOf(c.key) }));
   const manifest: Manifest = {
-    version: 1,
+    version: POOL_VERSION,
     createdAt: new Date().toISOString(),
     classes: counts.filter((c) => c.count >= MIN_CLASS),
     images: [...kept.values()],
@@ -223,47 +233,65 @@ async function processImage(
   id: string,
   key: string,
   buf: Buffer,
-  boxes: Box[],
+  raw: RawBox[],
   classes: { key: string; targetMids: string[]; confuserMids: string[] }[]
 ): Promise<Omit<PoolImage, 'author' | 'license' | 'source'> | null> {
   const img = sharp(buf);
   const { width: w = 0, height: h = 0 } = await img.metadata();
-  if (w < 120 || h < 120) return null;
+  if (Math.min(w, h) < MIN_SOURCE) return null;
 
-  // Square centred on the largest object of the requested category.
+  // Square centred on the objects of the requested category.
   const own = classes.find((c) => c.key === key)!;
-  const target = boxes
-    .filter((b) => own.targetMids.includes(b.mid))
-    .sort((a, b) => (b.x1 - b.x0) * (b.y1 - b.y0) - (a.x1 - a.x0) * (a.y1 - a.y0))[0];
-  if (!target) return null;
+  const mine = raw.filter((b) => own.targetMids.includes(b.mid));
+  if (!mine.length) return null;
   const side = Math.min(w, h);
-  const cx = ((target.x0 + target.x1) / 2) * w;
-  const cy = ((target.y0 + target.y1) / 2) * h;
+  const cx = ((Math.min(...mine.map((b) => b.x0)) + Math.max(...mine.map((b) => b.x1))) / 2) * w;
+  const cy = ((Math.min(...mine.map((b) => b.y0)) + Math.max(...mine.map((b) => b.y1))) / 2) * h;
   const left = Math.round(Math.min(Math.max(cx - side / 2, 0), w - side));
   const top = Math.round(Math.min(Math.max(cy - side / 2, 0), h - side));
 
-  const strong = new Set<string>();
-  const weak = new Set<string>();
-  for (const b of boxes) {
-    const ix = Math.max(0, Math.min(b.x1 * w, left + side) - Math.max(b.x0 * w, left));
-    const iy = Math.max(0, Math.min(b.y1 * h, top + side) - Math.max(b.y0 * h, top));
-    const frac = (ix * iy) / (side * side);
-    for (const c of classes) {
-      if (c.targetMids.includes(b.mid)) {
-        if (frac >= STRONG) strong.add(c.key);
-        if (frac >= WEAK) weak.add(c.key);
-      } else if (c.confuserMids.includes(b.mid) && frac >= WEAK) {
-        weak.add(c.key);
-      }
-    }
+  // Boxes re-expressed in the square, clipped; slivers dropped.
+  const toSquare = (b: RawBox): Box | null => {
+    const x0 = Math.max(0, (b.x0 * w - left) / side);
+    const x1 = Math.min(1, (b.x1 * w - left) / side);
+    const y0 = Math.max(0, (b.y0 * h - top) / side);
+    const y1 = Math.min(1, (b.y1 * h - top) / side);
+    if (x1 - x0 <= 0.005 || y1 - y0 <= 0.005) return null;
+    return [x0, y0, x1, y1].map((v) => Math.round(v * 1000) / 1000) as Box;
+  };
+
+  const targets: Record<string, Box[]> = {};
+  const fuzzy: Record<string, Box[]> = {};
+  for (const c of classes) {
+    const t = raw.filter((b) => c.targetMids.includes(b.mid)).map(toSquare).filter((b): b is Box => !!b);
+    const f = raw.filter((b) => c.confuserMids.includes(b.mid)).map(toSquare).filter((b): b is Box => !!b);
+    if (t.length) targets[c.key] = t;
+    if (f.length) fuzzy[c.key] = f;
   }
-  if (!strong.has(key)) return null;
+
+  // The requested category must fill a reasonable part of the square.
+  const cover = coverage(targets[key] ?? []);
+  if (cover < MIN_COVER || cover > MAX_COVER) return null;
 
   await img
     .extract({ left, top, width: side, height: side })
-    .resize(OUT, OUT)
-    .jpeg({ quality: 82 })
+    .resize(PHOTO_SIZE, PHOTO_SIZE)
+    .jpeg({ quality: 85 })
     .toFile(path.join(IMG_DIR, `${id}.jpg`));
 
-  return { id, strong: [...strong], weak: [...new Set([...weak, ...strong])] };
+  return { id, targets, fuzzy };
+}
+
+/** Share of the square covered by at least one box (sampled on a 50×50 grid). */
+function coverage(boxes: Box[]) {
+  let hit = 0;
+  const N = 50;
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < N; j++) {
+      const x = (i + 0.5) / N;
+      const y = (j + 0.5) / N;
+      if (boxes.some(([x0, y0, x1, y1]) => x >= x0 && x <= x1 && y >= y0 && y <= y1)) hit++;
+    }
+  }
+  return hit / (N * N);
 }

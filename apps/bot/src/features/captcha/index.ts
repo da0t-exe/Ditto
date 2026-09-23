@@ -21,7 +21,7 @@ import type { Feature } from '../../core/types.js';
 import { COLOR, embed, ok, replyError } from '../../core/ui.js';
 import { buildPool } from './build.js';
 import { promptFor } from './classes.js';
-import { makeGrid } from './grid.js';
+import { GRID, makeChallenge, renderChallenge } from './grid.js';
 import { getPool, reloadPool } from './pool.js';
 import {
   closeSession,
@@ -39,28 +39,25 @@ const FILE = 'captcha.jpg';
 
 // ---------- Views ----------
 
+/** 16 squares laid out like the picture, then Verify / New image. */
 function buttons(s: Session, lang: Lang) {
-  const rows = [0, 1, 2].map((r) =>
+  const rows = Array.from({ length: GRID }, (_, r) =>
     new ActionRowBuilder<ButtonBuilder>().addComponents(
-      [0, 1, 2].map((c) => {
-        const n = r * 3 + c;
+      Array.from({ length: GRID }, (_, c) => {
+        const n = r * GRID + c;
+        const on = s.selected.has(n);
         return new ButtonBuilder()
           .setCustomId(`captcha:t:${n}`)
-          .setLabel(String(n + 1))
-          .setStyle(s.selected.has(n) ? ButtonStyle.Primary : ButtonStyle.Secondary);
+          .setLabel(on ? '✓' : String(n + 1))
+          .setStyle(on ? ButtonStyle.Primary : ButtonStyle.Secondary);
       })
     )
   );
   rows.push(
     new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder()
-        .setCustomId('captcha:ok')
-        .setLabel(tr(lang, 'Verify', 'Valider'))
-        .setEmoji('✅')
-        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId('captcha:ok').setLabel(tr(lang, 'Verify', 'Valider')).setStyle(ButtonStyle.Success),
       new ButtonBuilder()
         .setCustomId('captcha:new')
-        .setLabel(tr(lang, 'New image', 'Autre image'))
         .setEmoji('🔄')
         .setStyle(ButtonStyle.Secondary)
         .setDisabled(s.refreshes >= MAX_REFRESH)
@@ -69,32 +66,28 @@ function buttons(s: Session, lang: Lang) {
   return rows;
 }
 
-function view(s: Session, lang: Lang, notice?: string) {
-  const failures = s.test ? 0 : getState(s.guildId, s.userId).failures;
-  const prompt = promptFor(s.grid.target, lang);
-  const lines = [
-    tr(lang, `Select every image with **${prompt}**.`, `Sélectionne toutes les images avec **${prompt}**.`),
-    tr(
-      lang,
-      'The buttons are laid out like the images: tick the right ones, then **Verify**.',
-      'Les boutons sont placés comme les images : coche les bonnes cases, puis **Valider**.'
-    ),
-  ];
-  if (notice) lines.push('', notice);
-  const e = new EmbedBuilder()
-    .setColor(COLOR.primary)
-    .setTitle(s.test ? tr(lang, '🧪 Captcha — test', '🧪 Captcha — test') : tr(lang, '🔐 Verification', '🔐 Vérification'))
-    .setDescription(lines.join('\n'))
-    .setImage(`attachment://${FILE}`)
-    .setFooter({
-      text: s.test
-        ? tr(lang, 'Test mode: your roles will not change', 'Mode test : aucun rôle ne sera modifié')
-        : tr(lang, `Attempts left: ${MAX_FAILURES - failures}`, `Essais restants : ${MAX_FAILURES - failures}`),
-    });
+/** The whole challenge is one picture: instruction, grid and attempts are drawn into it. */
+async function picture(s: Session, lang: Lang, notice?: string) {
+  const left = MAX_FAILURES - (s.test ? 0 : getState(s.guildId, s.userId).failures);
+  const footer =
+    notice ??
+    (s.test
+      ? tr(lang, 'Test mode — your roles will not change', 'Mode test — tes rôles ne changeront pas')
+      : tr(lang, `${left} attempt${left > 1 ? 's' : ''} left`, `${left} essai${left > 1 ? 's' : ''} restant${left > 1 ? 's' : ''}`));
+  return renderChallenge(
+    s.challenge.photo,
+    tr(lang, 'Select all squares with', 'Sélectionnez toutes les cases avec'),
+    promptFor(s.challenge.target, lang),
+    footer,
+    s.test ? 'TEST' : undefined
+  );
+}
+
+async function view(s: Session, lang: Lang, notice?: string) {
   return {
-    embeds: [e],
+    embeds: [new EmbedBuilder().setColor(COLOR.primary).setImage(`attachment://${FILE}`)],
     components: buttons(s, lang),
-    files: [new AttachmentBuilder(s.grid.image, { name: FILE })],
+    files: [new AttachmentBuilder(await picture(s, lang, notice), { name: FILE })],
   };
 }
 
@@ -105,9 +98,9 @@ function panel(guild: Guild) {
     COLOR.primary,
     tr(
       lang,
-      `To get into **${guild.name}**, show you are not a robot: press **Verify me** and pick the right images.\n\n` +
+      `To get into **${guild.name}**, show you are not a robot: press **Verify me** and pick the right squares.\n\n` +
         `You have ${MAX_FAILURES} attempts. After ${MAX_FAILURES} misses you will have to wait ${cfg.captchaTimeoutMinutes} minutes.`,
-      `Pour accéder à **${guild.name}**, prouve que tu n'es pas un robot : clique sur **Me vérifier** et sélectionne les bonnes images.\n\n` +
+      `Pour accéder à **${guild.name}**, prouve que tu n'es pas un robot : clique sur **Me vérifier** et sélectionne les bonnes cases.\n\n` +
         `Tu as ${MAX_FAILURES} essais. Après ${MAX_FAILURES} échecs, il faudra attendre ${cfg.captchaTimeoutMinutes} minutes.`
     ),
     tr(lang, '👋 Welcome!', '👋 Bienvenue !')
@@ -136,6 +129,13 @@ export async function ensurePanel(guild: Guild) {
 
 // ---------- Flow ----------
 
+/** Every ticked square is right, and every square that had to be ticked is. */
+function isCorrect(s: Session) {
+  const { required, optional } = s.challenge;
+  const allowed = new Set([...required, ...optional]);
+  return required.every((n) => s.selected.has(n)) && [...s.selected].every((n) => allowed.has(n));
+}
+
 async function start(i: ButtonInteraction<'cached'> | ChatInputCommandInteraction<'cached'>, test: boolean) {
   const cfg = getConfig(i.guildId);
   const lang = userLang(i);
@@ -154,14 +154,14 @@ async function start(i: ButtonInteraction<'cached'> | ChatInputCommandInteractio
     return replyError(
       i,
       test
-        ? tr(lang, 'The image pool is not ready yet — it builds itself on first start, or run `npm run captcha:fetch`, then `/captcha reload`.', "La réserve d'images n'est pas prête : elle se construit au premier démarrage, ou lance `npm run captcha:fetch` puis `/captcha reload`.")
+        ? tr(lang, 'The photo pool is not ready yet — it builds itself on start, or run `npm run captcha:fetch`, then `/captcha reload`.', "La réserve de photos n'est pas prête : elle se construit au démarrage, ou lance `npm run captcha:fetch` puis `/captcha reload`.")
         : tr(lang, 'Verification is temporarily unavailable. A staff member will let you in.', 'La vérification est momentanément indisponible. Un membre du staff va t’ouvrir l’accès.')
     );
   }
 
   await i.deferReply({ flags: MessageFlags.Ephemeral });
-  const s = openSession(i.guildId, i.user.id, await makeGrid(), test);
-  const msg = await i.editReply(view(s, lang));
+  const s = openSession(i.guildId, i.user.id, await makeChallenge(), test);
+  const msg = await i.editReply(await view(s, lang));
   s.messageId = msg.id;
 }
 
@@ -215,37 +215,36 @@ async function fail(i: ButtonInteraction<'cached'>, s: Session, lang: Lang) {
   }
 
   setState(i.guildId, i.user.id, failures, 0);
-  s.grid = await makeGrid();
+  s.challenge = await makeChallenge();
   s.selected.clear();
   const left = MAX_FAILURES - failures;
   const notice = tr(
     lang,
-    `❌ Not quite — here is a new image. **${left}** attempt${left > 1 ? 's' : ''} left.`,
-    `❌ Raté, voici une nouvelle image. Encore **${left}** essai${left > 1 ? 's' : ''}.`
+    `Please try again — ${left} attempt${left > 1 ? 's' : ''} left`,
+    `Réessayez — ${left} essai${left > 1 ? 's' : ''} restant${left > 1 ? 's' : ''}`
   );
-  return i.editReply({ ...view(s, lang, notice), attachments: [] });
+  return i.editReply({ ...(await view(s, lang, notice)), attachments: [] });
 }
 
 async function testResult(i: ButtonInteraction<'cached'>, s: Session, correct: boolean, lang: Lang) {
   closeSession(s);
-  const none = tr(lang, 'none', 'aucune');
-  const expected = s.grid.answer.map((n) => n + 1).join(', ') || none;
-  const chosen = [...s.selected].sort().map((n) => n + 1).join(', ') || none;
+  const list = (ns: number[]) => ns.map((n) => n + 1).sort((a, b) => a - b).join(', ') || tr(lang, 'none', 'aucune');
   const e = new EmbedBuilder()
     .setColor(correct ? COLOR.success : COLOR.danger)
     .setTitle(correct ? tr(lang, '🧪 Test passed', '🧪 Test réussi') : tr(lang, '🧪 Test failed', '🧪 Test raté'))
     .setDescription(
       [
-        `${tr(lang, 'Target:', 'Consigne :')} **${promptFor(s.grid.target, lang)}**`,
-        `${tr(lang, 'Expected tiles:', 'Cases attendues :')} **${expected}**`,
-        `${tr(lang, 'Your tiles:', 'Cases cochées :')} **${chosen}**`,
+        `${tr(lang, 'Target:', 'Consigne :')} **${promptFor(s.challenge.target, lang)}**`,
+        `${tr(lang, 'Squares to tick:', 'Cases à cocher :')} **${list(s.challenge.required)}**`,
+        `${tr(lang, 'Either way:', 'Au choix :')} ${list(s.challenge.optional)}`,
+        `${tr(lang, 'Your squares:', 'Tes cases :')} **${list([...s.selected])}**`,
       ].join('\n')
     )
     .setImage(`attachment://${FILE}`);
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId('captcha:retest').setLabel(tr(lang, 'Play again', 'Rejouer')).setEmoji('🔁').setStyle(ButtonStyle.Primary)
   );
-  return i.editReply({ embeds: [e], components: [row], files: [new AttachmentBuilder(s.grid.image, { name: FILE })], attachments: [] });
+  return i.editReply({ embeds: [e], components: [row], files: [new AttachmentBuilder(await picture(s, lang), { name: FILE })], attachments: [] });
 }
 
 // ---------- Arrivals ----------
@@ -301,7 +300,7 @@ export const captchaFeature: Feature = {
           )
         )
         .addSubcommand((s) => loc(s, 'panel', ['Post the panel in the verification channel again', 'Remettre le panneau dans le salon de vérification']))
-        .addSubcommand((s) => loc(s, 'reload', ['Reload the image pool', 'Recharger la réserve d’images'])),
+        .addSubcommand((s) => loc(s, 'reload', ['Reload the photo pool', 'Recharger la réserve de photos'])),
       async run(i) {
         if (!(await requirePrivileged(i))) return;
         const lang = userLang(i);
@@ -323,10 +322,10 @@ export const captchaFeature: Feature = {
         const pool = reloadPool();
         return pool
           ? i.reply({
-              embeds: [ok(tr(lang, `Pool reloaded: ${pool.images.length} images, ${pool.classes.length} categories.`, `Réserve rechargée : ${pool.images.length} images, ${pool.classes.length} catégories.`))],
+              embeds: [ok(tr(lang, `Pool reloaded: ${pool.images.length} photos, ${pool.classes.length} categories.`, `Réserve rechargée : ${pool.images.length} photos, ${pool.classes.length} catégories.`))],
               flags: MessageFlags.Ephemeral,
             })
-          : replyError(i, tr(lang, 'No image pool found.', "Aucune réserve d'images trouvée."));
+          : replyError(i, tr(lang, 'No photo pool found.', 'Aucune réserve de photos trouvée.'));
       },
     },
   ],
@@ -361,12 +360,12 @@ export const captchaFeature: Feature = {
       if (action === 'new') {
         if (s.refreshes >= MAX_REFRESH) return;
         s.refreshes++;
-        s.grid = await makeGrid();
+        s.challenge = await makeChallenge();
         s.selected.clear();
-        return i.editReply({ ...view(s, lang), attachments: [] });
+        return i.editReply({ ...(await view(s, lang)), attachments: [] });
       }
       if (action === 'ok') {
-        const correct = s.selected.size === s.grid.answer.length && s.grid.answer.every((n) => s.selected.has(n));
+        const correct = isCorrect(s);
         if (s.test) return testResult(i, s, correct, lang);
         return correct ? succeed(i, s, lang) : fail(i, s, lang);
       }
@@ -374,12 +373,12 @@ export const captchaFeature: Feature = {
   },
 
   init(client) {
-    // The console of a hosting panel is not a shell, so the pool builds itself on first start.
+    // The console of a hosting panel is not a shell, so the pool builds itself on start.
     if (!getPool() && process.env.CAPTCHA_AUTOFETCH !== '0') {
-      log.info('captcha', 'No image pool yet: building it in the background (a few minutes)…');
+      log.info('captcha', 'No photo pool in the current format: building it in the background (a few minutes)…');
       buildPool((msg) => log.info('captcha', msg))
         .then(() => reloadPool())
-        .catch((err) => log.error('captcha', 'could not build the image pool:', err));
+        .catch((err) => log.error('captcha', 'could not build the photo pool:', err));
     }
 
     client.on(Events.GuildMemberAdd, (member) => {
@@ -398,7 +397,7 @@ export const captchaFeature: Feature = {
   async guildReady(guild) {
     if (await ensurePanel(guild).catch(() => false)) {
       const pool = getPool();
-      log.info('captcha', `${guild.name}: panel ready, pool ${pool ? `${pool.images.length} images` : 'missing'}`);
+      log.info('captcha', `${guild.name}: panel ready, pool ${pool ? `${pool.images.length} photos` : 'missing'}`);
     }
   },
 };
