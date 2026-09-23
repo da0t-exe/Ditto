@@ -6,7 +6,7 @@
 
 Voice tools, music and a picture captcha for Discord.
 
-<a href="https://github.com/da0t-exe/Ditto/releases"><img src="./assets/badges/version.svg" alt="version 0.4.0" /></a>
+<a href="https://github.com/da0t-exe/Ditto/releases"><img src="./assets/badges/version.svg" alt="version 0.5.0" /></a>
 <img src="./assets/badges/node.svg" alt="node 20+" />
 <img src="./assets/badges/discordjs.svg" alt="discord.js 14" />
 <a href="LICENSE"><img src="./assets/badges/license.svg" alt="license MIT" /></a>
@@ -48,6 +48,9 @@ and sixteen buttons laid out like the squares.
   **Bandcamp**, **TikTok**, **Twitch**, **X** and **Instagram** play directly.
   **Spotify**, **Apple Music**, **Deezer** and **Tidal** tracks are matched on
   YouTube Music; Spotify, Apple Music and Deezer albums and playlists too.
+- Playback runs on **Lavalink**, started by Ditto itself — no second server.
+  Tracks start fast, you can **seek**, and **filters** (bass boost, nightcore,
+  vaporwave, 8D, karaoke) apply live.
 - A player message with buttons — pause, skip, stop, loop, queue — and a
   progress bar. Queue, volume, loop, shuffle and lyrics commands.
 - Whoever queued a track can skip it; otherwise half the listeners have to
@@ -74,6 +77,7 @@ and sixteen buttons laid out like the squares.
 | `/queue [page]` · `/nowplaying` | Show the queue, or the current track with its buttons | Anyone |
 | `/volume level` · `/loop mode` · `/shuffle` | Volume 0–100, loop off / track / queue, shuffle | Listeners |
 | `/remove position` · `/clear` | Remove one track, or empty the queue | Listeners |
+| `/seek time` · `/filter effect` | Jump to a moment (`1:30`), or apply an audio filter | Listeners |
 | `/lyrics [song]` | Lyrics of the current track, or of any song | Anyone |
 | `/setup` | Open the settings panel | Staff |
 | `/captcha test` | Try the captcha without touching your roles, then see the expected squares | Staff |
@@ -139,9 +143,17 @@ npm start
 
 Slash commands are registered on every server each time the bot starts, so
 they show up instantly — there is no deploy step. On the first start Ditto
-fetches what it needs by itself: FFmpeg comes with `npm install`, yt-dlp is
-downloaded into `data/bin` and updated daily, and the captcha photo pool (up
-to 150 photos per category) builds itself in the background.
+fetches what it needs by itself, into `data/`:
+
+- a **Java 21** runtime (unless Java 17+ is already installed) and the latest
+  **Lavalink** with its YouTube plugin — checked for updates daily, restarted
+  onto a new version only when nobody is listening;
+- **yt-dlp**, updated daily; FFmpeg comes with `npm install`;
+- the captcha photo pool, up to 150 photos per category.
+
+Lavalink runs on `127.0.0.1` with 512 MB of memory; plan about 1 GB of RAM
+for the whole bot. On Linux, Discord's voice encryption (DAVE) needs glibc 2.35
+or newer (Debian 12, Ubuntu 22.04 and later).
 
 | Variable | |
 |---|---|
@@ -150,6 +162,8 @@ to 150 photos per category) builds itself in the background.
 | `GUILD_IDS` | Comma-separated servers to run on (empty = all) |
 | `DATA_DIR` | Where state is kept (default `data/`) |
 | `CAPTCHA_AUTOFETCH=0` | Do not build the photo pool on startup |
+| `LAVALINK_HOST` · `LAVALINK_PORT` · `LAVALINK_PASSWORD` | Use an external Lavalink node instead of the built-in one |
+| `LAVALINK_MEMORY` | Memory for the built-in Lavalink (default `512M`) |
 
 | Script | |
 |---|---|
@@ -167,7 +181,7 @@ start, then set it back — `.env` and `data/` are never touched.
 
 TypeScript on discord.js 14, run directly with `tsx` (no build step), state in
 SQLite through `better-sqlite3`, images with `sharp`, audio through
-`@discordjs/voice`, yt-dlp and FFmpeg.
+Lavalink (`lavalink-client`), with yt-dlp for everything Lavalink cannot read.
 
 ```
 apps/bot/
@@ -186,9 +200,9 @@ apps/bot/
     ├── features/
     │   ├── setup.ts    The /setup panel
     │   ├── captcha/    Photo pool builder, challenge renderer, verification flow
-    │   ├── music/      Search and links, player, queue, now-playing buttons, lyrics
+    │   ├── music/      Built-in Lavalink, search and links, player, buttons, lyrics
     │   └── voice/      Voice commands, locks, rooms, auto-AFK, voice log
-    └── scripts/        captcha:fetch, selftest, music-check
+    └── scripts/        captcha:fetch, selftest, music-check, lavalink-check
 ```
 
 - **Features** each export their slash commands, button and menu handlers,
@@ -199,18 +213,22 @@ apps/bot/
   `grid.ts` picks the least-shown photo, applies a random zoom and mirror,
   works out which of the 16 squares hold the object, and draws the picture with
   `sharp`.
-- **Music:** `search.ts` turns text or a link into tracks — YouTube Music's own
-  search API for text, Spotify's embed pages, the iTunes and Deezer APIs, and
-  yt-dlp for everything else. `player.ts` streams yt-dlp → FFmpeg → Discord,
-  one player per server.
+- **Music:** `lavalink.ts` downloads, configures, starts and updates the
+  built-in Lavalink. `search.ts` turns text or a link into tracks — YouTube
+  Music's own search API for text, Spotify's embed pages, the iTunes and
+  Deezer APIs, and yt-dlp for the rest. `player.ts` hands each track to
+  Lavalink, falling back to the direct media address yt-dlp finds, then to a
+  downloaded copy (always for TikTok, X and Instagram).
 - **Storage** (`data/`, git-ignored): `ditto.db` holds settings, captcha
   attempts and history, locks and rooms; `captcha/` holds the photos and their
-  manifest with each author and source; `bin/` holds yt-dlp.
+  manifest with each author and source; `lavalink/` holds Java, Lavalink and
+  its config; `bin/` holds yt-dlp.
 
 ## License
 
 [MIT](LICENSE). The Ditto artwork is a fan drawing of a Pokémon © Nintendo /
 Creatures / GAME FREAK and is not covered by this license. Captcha photos come
 from [Open Images](https://storage.googleapis.com/openimages/web/index.html)
-(CC BY 2.0), the Roboto font is under the SIL Open Font License 1.1, and
+(CC BY 2.0), the Roboto font is under the SIL Open Font License 1.1, music
+plays through [Lavalink](https://github.com/lavalink-devs/Lavalink), and
 lyrics come from [LRCLIB](https://lrclib.net).
