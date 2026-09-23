@@ -2,7 +2,7 @@
   "name": "ditto",
   "version": "0.1.0",
   "private": true,
-  "description": "Ditto — Discord bot for voice channels, member verification and roles",
+  "description": "Discord bot with voice tools, a picture captcha and tiered roles",
   "license": "MIT",
   "author": "da0t-exe (https://github.com/da0t-exe)",
   "repository": {
