@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import sharp from 'sharp';
+import sharp, { type OverlayOptions } from 'sharp';
 import { db } from '../../core/db.js';
 import { getPool, IMG_DIR, PHOTO_SIZE, type Box, type PoolImage } from './pool.js';
 
@@ -149,7 +149,7 @@ async function renderPhoto(id: string, left: number, top: number, size: number, 
 
   // White lines between the squares.
   const step = PHOTO / GRID;
-  const lines: sharp.OverlayOptions[] = [];
+  const lines: OverlayOptions[] = [];
   for (let k = 1; k < GRID; k++) {
     const at = Math.round(k * step - LINE / 2);
     const bar = (w: number, h: number) => ({ create: { width: w, height: h, channels: 4 as const, background: '#ffffff' } });
@@ -162,7 +162,7 @@ async function renderPhoto(id: string, left: number, top: number, size: number, 
 /** The final picture: blue header with the instruction, the grid, and a footer line. */
 export async function renderChallenge(photo: Buffer, lead: string, target: string, footer: string, badge?: string) {
   const height = PAD + HEADER + PAD + PHOTO + FOOTER;
-  const layers: sharp.OverlayOptions[] = [
+  const layers: OverlayOptions[] = [
     { input: await sharp({ create: { width: PHOTO, height: HEADER, channels: 4, background: BLUE } }).png().toBuffer(), left: PAD, top: PAD },
     { input: await text(`<span foreground="#ffffff" size="16pt">${esc(lead)}</span>`, REGULAR, PHOTO - 40), left: PAD + 20, top: PAD + 20 },
     {
