@@ -6,7 +6,7 @@
 
 Voice tools, music and a picture captcha for Discord.
 
-<a href="https://github.com/da0t-exe/Ditto/releases"><img src="./assets/badges/version.svg" alt="version 0.5.0" /></a>
+<a href="https://github.com/da0t-exe/Ditto/releases"><img src="./assets/badges/version.svg" alt="version 0.5.1" /></a>
 <img src="./assets/badges/node.svg" alt="node 20+" />
 <img src="./assets/badges/discordjs.svg" alt="discord.js 14" />
 <a href="LICENSE"><img src="./assets/badges/license.svg" alt="license MIT" /></a>
