@@ -201,7 +201,7 @@ plugins:
     allowSearch: true
     allowDirectVideoIds: true
     allowDirectPlaylistIds: true
-    clients: ["MUSIC", "ANDROID_VR", "WEB", "WEBEMBEDDED"]
+    clients: ["MUSIC", "ANDROID_VR", "TVHTML5_SIMPLY", "IOS", "ANDROID_MUSIC", "WEB", "WEBEMBEDDED"]
 logging:
   level:
     root: WARN
@@ -213,6 +213,9 @@ logging:
 // ---------- Process ----------
 
 let child: ChildProcess | null = null;
+/** The node in use, once started. */
+let active: NodeConfig | null = null;
+export const activeNode = () => active;
 let stopping = false;
 let restartPending = false;
 
@@ -278,12 +281,12 @@ process.on('exit', () => child?.kill());
  */
 export async function startLavalink(isIdle: () => boolean): Promise<NodeConfig> {
   if (process.env.LAVALINK_HOST) {
-    return {
+    return (active = {
       host: process.env.LAVALINK_HOST,
       port: PORT,
       password: process.env.LAVALINK_PASSWORD ?? 'youshallnotpass',
       secure: process.env.LAVALINK_SECURE === 'true',
-    };
+    });
   }
 
   fs.mkdirSync(DIR, { recursive: true });
@@ -323,5 +326,6 @@ export async function startLavalink(isIdle: () => boolean): Promise<NodeConfig> 
     await waitReady(node).catch((err) => log.error('music', err.message));
   }, 5 * 60_000).unref();
 
+  active = node;
   return node;
 }

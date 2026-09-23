@@ -1,15 +1,16 @@
 import { Events, type Client } from 'discord.js';
 import { LavalinkManager, type Player } from 'lavalink-client';
 import { log } from '../../core/log.js';
-import { startLavalink, type NodeConfig } from './lavalink.js';
+import { activeNode, startLavalink, type NodeConfig } from './lavalink.js';
 import { UserError } from './search.js';
 
 /** Glue between Ditto's players and the Lavalink node. */
 export interface EngineHooks {
   isIdle(): boolean;
   /** A track finished, was stopped or failed to load (not when replaced by another one). */
-  onTrackEnd(guildId: string): void;
-  onTrackError(guildId: string, message: string): void;
+  onTrackEnd(guildId: string, encoded: string | null): void;
+  /** A track broke while playing (Lavalink sends the end event right after). */
+  onTrackError(guildId: string, encoded: string | null, message: string): void;
   /** Lavalink dropped the player (kicked from voice, node lost…). */
   onPlayerGone(guildId: string): void;
 }
@@ -47,14 +48,14 @@ export function initEngine(client: Client, hooks: EngineHooks) {
         },
       });
 
-      manager.on('trackEnd', (player, _track, payload) => {
-        if (payload.reason !== 'replaced') hooks.onTrackEnd(player.guildId);
+      manager.on('trackEnd', (player, track, payload) => {
+        if (payload.reason !== 'replaced') hooks.onTrackEnd(player.guildId, payload.track?.encoded ?? track?.encoded ?? null);
       });
-      manager.on('trackStuck', (player) => {
-        void player.stopPlaying(false, false);
+      manager.on('trackStuck', (player, track) => {
+        hooks.onTrackError(player.guildId, track?.encoded ?? null, 'track stuck');
       });
-      manager.on('trackError', (player, _track, payload) => {
-        hooks.onTrackError(player.guildId, payload.exception?.message ?? 'playback error');
+      manager.on('trackError', (player, track, payload) => {
+        hooks.onTrackError(player.guildId, track?.encoded ?? null, payload.exception?.message ?? 'playback error');
       });
       manager.on('playerDestroy', (player) => hooks.onPlayerGone(player.guildId));
       manager.nodeManager.on('error', (_n, err) => log.warn('music', `Lavalink: ${err.message}`));
@@ -84,6 +85,7 @@ interface LoadResult {
 
 /** Asks Lavalink to load an address (web page, direct media URL or local file) and returns the first track. */
 export async function loadEncoded(identifier: string): Promise<{ encoded: string | null; error: string | null }> {
+  const node = activeNode();
   if (!node) throw new UserError('Music is still starting — try again in a minute.', 'La musique démarre encore, réessaie dans une minute.');
   const scheme = node.secure ? 'https' : 'http';
   const res = await fetch(`${scheme}://${node.host}:${node.port}/v4/loadtracks?identifier=${encodeURIComponent(identifier)}`, {

@@ -297,6 +297,7 @@ const shuffle = simple('shuffle', ['Shuffle the queue', 'Mélanger la file'], as
 const clear = simple('clear', ['Empty the queue', 'Vider la file'], async (i, music, lang) => {
   const n = music.queue.length;
   music.queue.length = 0;
+  music.queueChanged();
   void refreshNowPlaying(music);
   return i.reply({ embeds: [ok(tr(lang, `Removed ${n} tracks from the queue.`, `${n} titres retirés de la file.`))] });
 });
@@ -312,6 +313,7 @@ const remove: Command = {
     const pos = i.options.getInteger('position', true);
     if (pos > music.queue.length) return replyError(i, tr(lang, `There are only ${music.queue.length} tracks in the queue.`, `Il n’y a que ${music.queue.length} titres dans la file.`));
     const [t] = music.queue.splice(pos - 1, 1);
+    music.queueChanged();
     void refreshNowPlaying(music);
     return i.reply({ embeds: [ok(tr(lang, `Removed ${trackLine(t)}.`, `${trackLine(t)} retiré.`))], allowedMentions: { parse: [] } });
   },
@@ -438,8 +440,8 @@ export const musicFeature: Feature = {
   init(client) {
     initEngine(client, {
       isIdle: () => ![...players.values()].some((m) => m.current),
-      onTrackEnd: (guildId) => players.get(guildId)?.onEnded(),
-      onTrackError: (guildId, message) => log.warn('music', `${guildId}: ${message}`),
+      onTrackEnd: (guildId, encoded) => players.get(guildId)?.onEnded(encoded),
+      onTrackError: (guildId, encoded, message) => players.get(guildId)?.onFailed(encoded, message),
       onPlayerGone: (guildId) => players.get(guildId)?.destroy(true),
     });
     // Fetch yt-dlp now so the first link is quick; clean downloaded clips every hour.

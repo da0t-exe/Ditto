@@ -15,35 +15,48 @@ export type FilterName = 'none' | 'bassboost' | 'nightcore' | 'vaporwave' | '8d'
 const IDLE_LEAVE_MS = 3 * 60_000; // queue finished
 const EMPTY_LEAVE_MS = 60_000; // nobody left in the channel
 
-/** Short clips from these sites are downloaded first: Lavalink cannot read their pages. */
-const DOWNLOAD_FIRST: Source[] = ['tiktok', 'x', 'instagram'];
+// ---------- Routes to a playable track ----------
 
 /**
- * Turns a track into something Lavalink can play, trying in order: Lavalink on the page
- * itself, the direct media address found by yt-dlp, then a downloaded copy.
+ * How a track reaches Lavalink: Lavalink reading the page itself, the direct media
+ * address yt-dlp finds, or a copy yt-dlp downloads. If one fails — while loading or
+ * while playing — the next one is tried.
  */
-async function toLavalink(track: Track): Promise<{ encoded: string; file?: string }> {
-  const viaDownload = async () => {
+export type Route = 'lavalink' | 'direct' | 'download';
+
+/** Short clips from these sites are downloaded first: Lavalink cannot read their pages. */
+const DOWNLOAD_FIRST: Source[] = ['tiktok', 'x', 'instagram'];
+const MAX_DOWNLOAD_SECONDS = 20 * 60;
+
+const isYoutube = (t: Track) => t.source === 'youtube' || t.source === 'ytmusic' || /youtu\.?be/.test(t.url);
+
+/**
+ * YouTube refuses Lavalink's own YouTube clients for most videos without a signed-in
+ * account ("This video requires login"), while yt-dlp gets through, so YouTube goes
+ * through yt-dlp first and Lavalink's plugin is only the fallback. Other sources are
+ * read by Lavalink directly.
+ */
+export function routesFor(track: Track): Route[] {
+  if (DOWNLOAD_FIRST.includes(track.source)) return ['download'];
+  const canDownload = !track.live && (track.duration ?? 0) <= MAX_DOWNLOAD_SECONDS;
+  const routes: Route[] = isYoutube(track) ? ['direct', 'lavalink'] : ['lavalink', 'direct'];
+  return canDownload ? [...routes, 'download'] : routes;
+}
+
+export async function loadVia(route: Route, track: Track): Promise<{ encoded: string; file?: string }> {
+  if (route === 'download') {
     const file = await downloadAudio(track.url);
     const r = await loadEncoded(file);
     if (!r.encoded) throw new Error(r.error ?? 'unreadable file');
     return { encoded: r.encoded, file };
-  };
-  if (DOWNLOAD_FIRST.includes(track.source)) return viaDownload();
-
-  const direct = await loadEncoded(track.url);
-  if (direct.encoded) return { encoded: direct.encoded };
-  log.warn('music', `Lavalink could not load ${track.url} (${direct.error}), trying yt-dlp`);
-
-  try {
-    const r = await loadEncoded(await directAudioUrl(track.url));
-    if (r.encoded) return { encoded: r.encoded };
-  } catch {
-    /* next fallback */
   }
-  if (!track.live && (track.duration ?? 0) <= 20 * 60) return viaDownload();
-  throw new UserError('This track could not be loaded.', 'Ce titre n’a pas pu être chargé.');
+  const address = route === 'direct' ? await directAudioUrl(track.url) : track.url;
+  const r = await loadEncoded(address);
+  if (!r.encoded) throw new Error(r.error ?? 'nothing loaded');
+  return { encoded: r.encoded };
 }
+
+// ---------- Player ----------
 
 /** Everything Ditto plays in one server. */
 export class GuildMusic {
@@ -59,6 +72,15 @@ export class GuildMusic {
   readonly stopVotes = new Set<string>();
 
   private player: LavalinkPlayer | null = null;
+  /** The Lavalink track now playing; events about any other one are stale. */
+  private currentEncoded: string | null = null;
+  /** The last track handed to Lavalink, replayed as is when looping. */
+  private lastEncoded: string | null = null;
+  private routes: Route[] = [];
+  private routeIndex = 0;
+  private announced = false;
+  /** The next track, already loaded while the current one plays. */
+  private prepared: { track: Track; route: Route; encoded: string } | null = null;
   private tempFile: string | null = null;
   private idleTimer: NodeJS.Timeout | null = null;
   private emptyTimer: NodeJS.Timeout | null = null;
@@ -115,18 +137,36 @@ export class GuildMusic {
       await this.advance();
       return 0;
     }
+    this.queueChanged();
     return this.queue.length - tracks.length + 1;
   }
 
-  /** Called by the engine when Lavalink reports the end of a track. */
-  onEnded() {
+  /** Lavalink reports the end of a track (finished, stopped, or failed to load). */
+  onEnded(encoded: string | null) {
+    if (encoded && encoded !== this.currentEncoded) return; // a track we already moved on from
     void this.advance();
+  }
+
+  /** Lavalink reports that the playing track broke: try the next route before giving up. */
+  onFailed(encoded: string | null, message: string) {
+    if (!this.current || (encoded && encoded !== this.currentEncoded)) return;
+    const track = this.current;
+    const failed = this.routes[this.routeIndex];
+    log.warn('music', `${this.guild.name}: ${track.title} failed via ${failed}: ${message}`);
+    this.currentEncoded = null; // the end event of the broken track must not advance the queue
+    this.routeIndex++;
+    void this.start(track, new Error(message));
   }
 
   private async advance() {
     if (this.destroyed) return;
-    this.dropTempFile();
     const previous = this.current;
+    const replaying = !!previous && this.loop === 'track';
+    if (!replaying) {
+      this.dropTempFile();
+      this.lastEncoded = null;
+    }
+    this.currentEncoded = null;
     this.skipVotes.clear();
     this.stopVotes.clear();
 
@@ -143,24 +183,91 @@ export class GuildMusic {
       this.idleTimer = setTimeout(() => this.destroy(), IDLE_LEAVE_MS);
       return;
     }
-    await this.play(next);
+    // Replaying the same track (loop) or one prepared in advance: no loading needed.
+    const again = next === previous && this.lastEncoded ? { route: this.routes[this.routeIndex], encoded: this.lastEncoded } : null;
+    const ready = this.prepared?.track === next ? this.prepared : again;
+    this.prepared = null;
+    this.current = next;
+    this.announced = false;
+    if (ready) {
+      this.routes = routesFor(next);
+      this.routeIndex = Math.max(0, this.routes.indexOf(ready.route));
+      if (await this.playEncoded(next, ready.encoded)) return;
+      this.routeIndex++; // what was prepared no longer plays: carry on with the other routes
+      return this.start(next);
+    }
+    try {
+      await ensurePlayable(next);
+    } catch (err) {
+      return this.giveUp(next, err as Error);
+    }
+    this.routes = routesFor(next);
+    this.routeIndex = 0;
+    await this.start(next);
   }
 
-  private async play(track: Track) {
-    this.current = track;
+  /** Hands an already loaded track to Lavalink. */
+  private async playEncoded(track: Track, encoded: string) {
+    if (!this.player || this.current !== track) return false;
     try {
-      await ensurePlayable(track);
-      const { encoded, file } = await toLavalink(track);
-      this.tempFile = file ?? null;
-      if (!this.player) throw new Error('not connected');
+      this.currentEncoded = encoded;
+      this.lastEncoded = encoded;
       await this.player.play({ track: { encoded, requester: track.requesterId }, volume: this.volume });
-      this.hooks.onTrackStart(this);
-    } catch (err) {
-      this.hooks.onError(this, track, err as Error);
-      // Skip what cannot be played instead of stalling the queue — and never loop back to it.
-      this.current = null;
-      await this.advance();
+      if (!this.announced) {
+        this.announced = true;
+        this.hooks.onTrackStart(this);
+      }
+      this.prepareNext();
+      return true;
+    } catch {
+      this.currentEncoded = null;
+      return false;
     }
+  }
+
+  /** Loads the next track in the background (downloads excepted: those stay on demand). */
+  private prepareNext() {
+    const next = this.loop === 'track' ? null : this.queue[0];
+    if (!next || this.prepared?.track === next) return;
+    void (async () => {
+      await ensurePlayable(next);
+      const route = routesFor(next).find((r) => r !== 'download');
+      if (!route) return;
+      const { encoded } = await loadVia(route, next);
+      if (this.queue[0] === next) this.prepared = { track: next, route, encoded };
+    })().catch(() => {});
+  }
+
+  /** Plays `track` from the current route onwards. */
+  private async start(track: Track, lastError?: Error) {
+    let error = lastError;
+    for (; this.routeIndex < this.routes.length; this.routeIndex++) {
+      if (this.destroyed || this.current !== track) return;
+      const route = this.routes[this.routeIndex];
+      try {
+        const { encoded, file } = await loadVia(route, track);
+        this.dropTempFile();
+        this.tempFile = file ?? null;
+        if (!this.player || this.current !== track) return;
+        if (await this.playEncoded(track, encoded)) return;
+        throw new Error('Lavalink refused to play it');
+      } catch (err) {
+        error = err as Error;
+        log.warn('music', `${this.guild.name}: ${track.title} could not load via ${route}: ${error.message}`);
+      }
+    }
+    this.giveUp(track, error ?? new Error('no route'));
+  }
+
+  private giveUp(track: Track, error: Error) {
+    this.hooks.onError(
+      this,
+      track,
+      error instanceof UserError ? error : new UserError('This track could not be played.', 'Ce titre n’a pas pu être lu.')
+    );
+    // Never loop back to a track that cannot be played.
+    this.current = null;
+    void this.advance();
   }
 
   private dropTempFile() {
@@ -171,7 +278,8 @@ export class GuildMusic {
   skip() {
     // The end event calls advance(); a looped track would otherwise start again.
     if (this.loop === 'track') this.current = null;
-    void this.player?.stopPlaying(false, false).catch(() => {});
+    if (this.currentEncoded) void this.player?.stopPlaying(false, false).catch(() => {});
+    else void this.advance(); // still loading: move on directly
   }
 
   pause() {
@@ -203,11 +311,18 @@ export class GuildMusic {
     this.filter = name;
   }
 
+  /** Call after changing the queue order or content. */
+  queueChanged() {
+    if (this.prepared && this.queue[0] !== this.prepared.track) this.prepared = null;
+    if (this.current) this.prepareNext();
+  }
+
   shuffle() {
     for (let i = this.queue.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [this.queue[i], this.queue[j]] = [this.queue[j], this.queue[i]];
     }
+    this.queueChanged();
   }
 
   /** Called when the listeners in the channel change. */
@@ -233,6 +348,7 @@ export class GuildMusic {
     if (this.emptyTimer) clearTimeout(this.emptyTimer);
     this.queue.length = 0;
     this.current = null;
+    this.currentEncoded = null;
     this.dropTempFile();
     if (!fromLavalink) void this.player?.destroy('stopped').catch(() => {});
     this.player = null;
