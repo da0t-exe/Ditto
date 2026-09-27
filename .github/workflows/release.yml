@@ -1,7 +1,11 @@
-# Publishes a GitHub release for each version tag (v1.2.0…), with the matching
-# section of CHANGELOG.md as its notes. To release: add the section, bump the
-# version, then push a tag:  git tag v1.2.0 && git push origin v1.2.0
-# Running it again (Actions → Release → Run workflow) updates the notes.
+# Publishes a GitHub release with the matching section of CHANGELOG.md as its notes.
+#
+# To release: add the version's section to CHANGELOG.md and bump the version on
+# main, then either
+#   - Actions → Release → Run workflow, with the tag (v1.2.0): the tag is created
+#     on the latest commit of main; or
+#   - push a tag yourself: git tag v1.2.0 && git push origin v1.2.0
+# Running it again for an existing release updates its notes.
 name: Release
 
 on:
@@ -10,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing tag to publish, e.g. v1.1.0
+        description: Version tag, e.g. v1.2.0 (created on this branch's latest commit if it does not exist)
         required: true
 
 permissions:
@@ -25,8 +29,18 @@ jobs:
       GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v5
-        with:
-          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+
+      - name: Check the tag
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::The tag must look like v1.2.0, not $TAG"
+            exit 1
+          fi
+          version=$(node -p "require('./package.json').version")
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::package.json says $version, the tag is $TAG"
+            exit 1
+          fi
 
       - name: Notes from CHANGELOG.md
         run: |
@@ -43,5 +57,5 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" --title "Ditto $TAG" --notes-file notes.md
           else
-            gh release create "$TAG" --title "Ditto $TAG" --notes-file notes.md --verify-tag --latest
+            gh release create "$TAG" --title "Ditto $TAG" --notes-file notes.md --target "$GITHUB_SHA" --latest
           fi

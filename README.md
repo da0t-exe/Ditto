@@ -232,7 +232,7 @@ apps/bot/
     │   └── dashboard.ts /dashboard
     ├── dashboard/      Web server, login, JSON API, and the page (public/)
     └── scripts/        selftest, captcha:fetch, music-check, lavalink-check, music-lab
-.github/workflows/      release.yml: publishes a GitHub release from CHANGELOG.md for each v* tag
+.github/workflows/      release.yml: publishes a GitHub release from CHANGELOG.md (Actions → Release)
 extras/luna/            The Ditto pages for the Luna theme's sidebar (install.sh)
 extras/pterodactyl/     The Ditto tab for a stock Pterodactyl panel or Blueprint
 ```
