@@ -18,6 +18,8 @@ captcha for newcomers, music for everyone, voice tools for moderators, and a
 dashboard to run it all from the browser. Everything is set up from Discord with
 `/setup` — **Quick setup** does it in one click.
 
+What changed in each version: [CHANGELOG.md](CHANGELOG.md).
+
 ## Features
 
 ### 🔐 Captcha
@@ -230,6 +232,7 @@ apps/bot/
     │   └── dashboard.ts /dashboard
     ├── dashboard/      Web server, login, JSON API, and the page (public/)
     └── scripts/        selftest, captcha:fetch, music-check, lavalink-check, music-lab
+.github/workflows/      release.yml: publishes a GitHub release from CHANGELOG.md for each v* tag
 extras/luna/            The Ditto pages for the Luna theme's sidebar (install.sh)
 extras/pterodactyl/     The Ditto tab for a stock Pterodactyl panel or Blueprint
 ```
@@ -247,8 +250,9 @@ extras/pterodactyl/     The Ditto tab for a stock Pterodactyl panel or Blueprint
   stream address yt-dlp finds or a downloaded copy when that fails, and prepares
   what comes next. `views.ts` draws the player.
 - **Dashboard:** `server.ts` serves the page and the API on `SERVER_PORT`;
-  `auth.ts` checks the admin password or a one-time `/dashboard` link and keeps
-  only a hash of each session token.
+  `auth.ts` checks the admin password, a one-time `/dashboard` link, or a
+  one-time code the Luna panel types in the server's console, and keeps only a
+  hash of each session token.
 - **Storage** (`data/`, git-ignored): `ditto.db` holds settings, captcha attempts
   and history, locks, rooms and dashboard sessions; `lavalink/` holds Java,
   Lavalink and its config; `bin/` holds yt-dlp; `captcha/` holds photos added with

@@ -1,0 +1,47 @@
+# Publishes a GitHub release for each version tag (v1.2.0…), with the matching
+# section of CHANGELOG.md as its notes. To release: add the section, bump the
+# version, then push a tag:  git tag v1.2.0 && git push origin v1.2.0
+# Running it again (Actions → Release → Run workflow) updates the notes.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to publish, e.g. v1.1.0
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+
+      - name: Notes from CHANGELOG.md
+        run: |
+          version="${TAG#v}"
+          # The lines under "## <version> …", up to the next "## " heading.
+          awk -v v="$version" '/^## / { if (found) exit; if ($2 == v) { found = 1; next } } found' CHANGELOG.md > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "::error::CHANGELOG.md has no section for $version"
+            exit 1
+          fi
+
+      - name: Publish
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "Ditto $TAG" --notes-file notes.md
+          else
+            gh release create "$TAG" --title "Ditto $TAG" --notes-file notes.md --verify-tag --latest
+          fi
