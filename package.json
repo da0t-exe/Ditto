@@ -21,5 +21,10 @@
     "typecheck": "npm run typecheck -w @ditto/bot",
     "selftest": "npm run selftest -w @ditto/bot",
     "captcha:fetch": "npm run captcha:fetch -w @ditto/bot"
+  },
+  "allowScripts": {
+    "better-sqlite3": true,
+    "esbuild": true,
+    "ffmpeg-static": true
   }
 }
