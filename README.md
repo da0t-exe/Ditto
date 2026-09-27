@@ -90,8 +90,9 @@ A web dashboard served by Ditto itself — no second program to run:
 - locked channels, with an unlock button, and the live activity log.
 
 Dark by default, with a light mode and an accent colour you pick to match your
-panel. On Pterodactyl it also fits in the panel as a **Ditto** tab — including with
-the Luna theme: see [extras/pterodactyl](extras/pterodactyl/README.md).
+panel. On Pterodactyl it also fits in the panel as a **Ditto** tab: with the Luna
+theme, one script adds it natively ([extras/luna](extras/luna/README.md)); for a
+stock panel or Blueprint, see [extras/pterodactyl](extras/pterodactyl/README.md).
 
 ## Commands
 
@@ -226,7 +227,8 @@ apps/bot/
     │   └── dashboard.ts /dashboard
     ├── dashboard/      Web server, login, JSON API, and the page (public/)
     └── scripts/        selftest, captcha:fetch, music-check, lavalink-check, music-lab
-extras/pterodactyl/     The Ditto tab for the Pterodactyl panel (Luna, stock, Blueprint)
+extras/luna/            The native Ditto tab for the Luna theme (install.sh)
+extras/pterodactyl/     The Ditto tab for a stock Pterodactyl panel or Blueprint
 ```
 
 - **Features** each export their slash commands, button and menu handlers, event

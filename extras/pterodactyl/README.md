@@ -17,14 +17,15 @@ simplest to the most integrated.
    the server's **Network** page.
 3. Staff can instead type `/dashboard` in Discord for a one-time login link.
 
-With **Luna**, you can also add this address as a custom link in the theme editor's
-navigation, if your version offers custom links.
+## Luna
 
-## 2. A « Ditto » tab — Luna or any panel built from source
+With the **Luna** theme, use [extras/luna](../luna/README.md) instead of the steps
+below: one script adds a native **Ditto** page, drawn in your Luna colours, that
+works on HTTPS panels without any proxy setup.
 
-Luna is a standalone theme (it replaces the panel's files instead of using
-Blueprint) and ships its full source, so the tab is added like any other addon:
-one file, one route, one rebuild. The same steps work on a stock Pterodactyl 1.11.
+## 2. A « Ditto » tab — a stock panel built from source
+
+The tab is added like any other addon: one file, one route, one rebuild.
 
 On the panel machine, as the user that owns the panel files:
 
@@ -54,9 +55,6 @@ cp /path/to/Ditto/extras/pterodactyl/blueprint/components/DittoPage.tsx \
    },
    ```
 
-   In Luna, if the server routes are not in that file, search the source for
-   `name: 'Files'` — the list you find is the one to add to.
-
 3. Rebuild the panel's front end:
 
    ```bash
@@ -65,12 +63,12 @@ cp /path/to/Ditto/extras/pterodactyl/blueprint/components/DittoPage.tsx \
    yarn build:production
    ```
 
-Refresh the panel: every server has a **Ditto** tab. Updating Luna or the panel
+Refresh the panel: every server has a **Ditto** tab. Updating the panel
 overwrites `routes.ts`, so step 2 has to be done again after an update.
 
 ## 3. Blueprint (stock panel with Blueprint)
 
-For a panel that uses [Blueprint](https://blueprint.zip) — not Luna — this folder
+For a panel that uses [Blueprint](https://blueprint.zip), this folder
 is a ready extension:
 
 ```bash
