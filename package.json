@@ -1,8 +1,8 @@
 {
   "name": "ditto",
-  "version": "0.5.2",
+  "version": "1.0.0",
   "private": true,
-  "description": "Discord bot with voice tools, music and a picture captcha",
+  "description": "Discord bot with voice tools, music, a reCAPTCHA-style captcha and a web dashboard",
   "license": "MIT",
   "author": "da0t-exe (https://github.com/da0t-exe)",
   "repository": {
