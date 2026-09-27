@@ -3,10 +3,9 @@ import { db } from './db.js';
 import { log } from './log.js';
 
 export interface GuildConfig {
-  language: 'auto' | 'en' | 'fr';
-  /** Given once the captcha is passed; holds what @everyone would normally have. */
+  /** Given once the captcha is passed (optional: the pending role alone can gate the server). */
   memberRole: string | null;
-  /** Held while a newcomer has not passed the captcha yet. */
+  /** Held while a newcomer has not passed the captcha yet; it cannot see the server. */
   pendingRole: string | null;
   verifyChannel: string | null;
   /** Given instead of the captcha to members brought in by one of `quarantineBots`. */
@@ -19,11 +18,12 @@ export interface GuildConfig {
   voiceLog: boolean;
   autoAfk: boolean;
   afkIdleMinutes: number;
+  /** Misses allowed before the timeout. */
+  captchaAttempts: number;
   captchaTimeoutMinutes: number;
 }
 
-const DEFAULTS: GuildConfig = {
-  language: 'auto',
+export const DEFAULTS: GuildConfig = {
   memberRole: null,
   pendingRole: null,
   verifyChannel: null,
@@ -35,8 +35,11 @@ const DEFAULTS: GuildConfig = {
   voiceLog: true,
   autoAfk: true,
   afkIdleMinutes: 10,
+  captchaAttempts: 3,
   captchaTimeoutMinutes: 10,
 };
+
+const KEYS = Object.keys(DEFAULTS) as (keyof GuildConfig)[];
 
 const cache = new Map<string, GuildConfig>();
 const selectStmt = db.prepare<[string], { data: string }>('SELECT data FROM guild_config WHERE guild_id = ?');
@@ -52,7 +55,9 @@ export function getConfig(guildId: string): GuildConfig {
   let cfg = cache.get(guildId);
   if (!cfg) {
     const row = selectStmt.get(guildId);
-    cfg = { ...DEFAULTS, ...(row ? (JSON.parse(row.data) as Partial<GuildConfig>) : {}) };
+    const saved = row ? (JSON.parse(row.data) as Partial<GuildConfig>) : {};
+    // Settings from older versions that no longer exist are dropped.
+    cfg = { ...DEFAULTS, ...Object.fromEntries(Object.entries(saved).filter(([k]) => KEYS.includes(k as keyof GuildConfig))) };
     cache.set(guildId, cfg);
   }
   return cfg;
@@ -79,8 +84,8 @@ const norm = (s: string) =>
     .trim();
 
 /**
- * Guesses roles and channels from common English and French names. Only used to
- * pre-fill /setup — every value can be changed there.
+ * Guesses roles and channels from common names (English and French servers alike).
+ * Only used to pre-fill /setup — every value can be changed there.
  */
 export async function detectConfig(guild: Guild): Promise<Partial<GuildConfig>> {
   const roles = [...guild.roles.cache.values()].filter((r) => r.id !== guild.id && !r.managed);

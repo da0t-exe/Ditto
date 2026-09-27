@@ -69,9 +69,14 @@ export function initEngine(client: Client, hooks: EngineHooks) {
   });
 }
 
+/** For the dashboard: whether music works, and the Lavalink version. */
+export function musicStatus() {
+  return { ready, node: node ? `${node.host}:${node.port}` : null };
+}
+
 export function lavalink(): LavalinkManager {
   if (!manager || !ready) {
-    throw new UserError('Music is still starting — try again in a minute.', 'La musique démarre encore, réessaie dans une minute.');
+    throw new UserError('Music is still starting — try again in a minute.');
   }
   return manager;
 }
@@ -86,7 +91,7 @@ interface LoadResult {
 /** Asks Lavalink to load an address (web page, direct media URL or local file) and returns the first track. */
 export async function loadEncoded(identifier: string): Promise<{ encoded: string | null; error: string | null }> {
   const node = activeNode();
-  if (!node) throw new UserError('Music is still starting — try again in a minute.', 'La musique démarre encore, réessaie dans une minute.');
+  if (!node) throw new UserError('Music is still starting — try again in a minute.');
   const scheme = node.secure ? 'https' : 'http';
   const res = await fetch(`${scheme}://${node.host}:${node.port}/v4/loadtracks?identifier=${encodeURIComponent(identifier)}`, {
     headers: { Authorization: node.password },

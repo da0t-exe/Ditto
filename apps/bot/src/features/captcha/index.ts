@@ -3,127 +3,142 @@ import {
   AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
-  EmbedBuilder,
+  ContainerBuilder,
   Events,
+  MediaGalleryBuilder,
   MessageFlags,
+  SeparatorSpacingSize,
   SlashCommandBuilder,
   type ButtonInteraction,
   type ChatInputCommandInteraction,
   type Guild,
   type GuildMember,
+  type MessageComponentInteraction,
 } from 'discord.js';
-import { getConfig } from '../../core/config.js';
-import { guildLang, loc, tr, userLang, type Lang } from '../../core/i18n.js';
+import { getConfig, type GuildConfig } from '../../core/config.js';
 import { log } from '../../core/log.js';
 import { logTo } from '../../core/logs.js';
 import { isPrivileged, requirePrivileged } from '../../core/perms.js';
 import type { Feature } from '../../core/types.js';
-import { COLOR, embed, ok, replyError } from '../../core/ui.js';
-import { buildPool } from './build.js';
+import { card, COLOR, ok, replyError, text, V2 } from '../../core/ui.js';
+import { GRID } from './cells.js';
 import { promptFor } from './classes.js';
-import { GRID, makeChallenge, renderChallenge } from './grid.js';
-import { getPool, reloadPool } from './pool.js';
-import {
-  closeSession,
-  getSession,
-  getState,
-  markVerified,
-  MAX_FAILURES,
-  MAX_REFRESH,
-  openSession,
-  setState,
-  type Session,
-} from './session.js';
+import { nextChallenge, prepareChallenges } from './grid.js';
+import { dropOutdatedExtras, getPool, reloadPool } from './pool.js';
+import { closeSession, getSession, getState, markVerified, MAX_REFRESH, nextRound, openSession, record, setState, type Session } from './session.js';
 
-const FILE = 'captcha.jpg';
+// ---------- Settings ----------
 
-// ---------- Views ----------
+/** The captcha runs once there is a verification channel and a role to swap. */
+export const verificationOn = (cfg: GuildConfig) => !!cfg.verifyChannel && !!(cfg.pendingRole || cfg.memberRole);
 
-/** 16 squares laid out like the picture, then Verify / New image. */
-function buttons(s: Session, lang: Lang) {
-  const rows = Array.from({ length: GRID }, (_, r) =>
+/** Verified: holds the member role, or — without one — no longer holds the pending role. */
+function isVerified(member: GuildMember, cfg: GuildConfig) {
+  if (cfg.memberRole) return member.roles.cache.has(cfg.memberRole);
+  return !!cfg.pendingRole && !member.roles.cache.has(cfg.pendingRole);
+}
+
+// ---------- The challenge message ----------
+
+const fileName = (s: Session) => `captcha-${s.id}.jpg`;
+
+/** 16 buttons laid out like the squares of the picture. */
+function tiles(s: Session) {
+  return Array.from({ length: GRID }, (_, r) =>
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       Array.from({ length: GRID }, (_, c) => {
         const n = r * GRID + c;
         const on = s.selected.has(n);
         return new ButtonBuilder()
-          .setCustomId(`captcha:t:${n}`)
+          .setCustomId(`captcha:t:${s.id}:${n}`)
           .setLabel(on ? '✓' : String(n + 1))
           .setStyle(on ? ButtonStyle.Primary : ButtonStyle.Secondary);
       })
     )
   );
-  rows.push(
-    new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId('captcha:ok').setLabel(tr(lang, 'Verify', 'Valider')).setStyle(ButtonStyle.Success),
-      new ButtonBuilder()
-        .setCustomId('captcha:new')
-        .setEmoji('🔄')
-        .setStyle(ButtonStyle.Secondary)
-        .setDisabled(s.refreshes >= MAX_REFRESH)
-    )
-  );
-  return rows;
 }
 
-/** The whole challenge is one picture: instruction, grid and attempts are drawn into it. */
-async function picture(s: Session, lang: Lang, notice?: string) {
-  const left = MAX_FAILURES - (s.test ? 0 : getState(s.guildId, s.userId).failures);
-  const footer =
-    notice ??
-    (s.test
-      ? tr(lang, 'Test mode — your roles will not change', 'Mode test — tes rôles ne changeront pas')
-      : tr(lang, `${left} attempt${left > 1 ? 's' : ''} left`, `${left} essai${left > 1 ? 's' : ''} restant${left > 1 ? 's' : ''}`));
-  return renderChallenge(
-    s.challenge.photo,
-    tr(lang, 'Select all squares with', 'Sélectionnez toutes les cases avec'),
-    promptFor(s.challenge.target, lang),
-    footer,
-    s.test ? 'TEST' : undefined
+/** Reload, help and the blue button: « Skip » until a square is ticked, then « Verify », like reCAPTCHA. */
+function controls(s: Session) {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`captcha:new:${s.id}`)
+      .setEmoji('🔄')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(s.refreshes >= MAX_REFRESH),
+    new ButtonBuilder().setCustomId(`captcha:help:${s.id}`).setEmoji('ℹ️').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(`captcha:ok:${s.id}`)
+      .setLabel(s.selected.size ? 'Verify' : 'Skip')
+      .setStyle(ButtonStyle.Primary)
   );
 }
 
-async function view(s: Session, lang: Lang, notice?: string) {
+function attemptsLeft(s: Session) {
+  if (s.test) return 'Test mode — your roles will not change';
+  const left = getConfig(s.guildId).captchaAttempts - getState(s.guildId, s.userId).failures;
+  return `${left} attempt${left === 1 ? '' : 's'} left`;
+}
+
+function components(s: Session, notice?: string) {
+  return [
+    new MediaGalleryBuilder().addItems((item) =>
+      item.setURL(`attachment://${fileName(s)}`).setDescription(`Select all squares with ${promptFor(s.challenge.target)}`)
+    ),
+    ...tiles(s),
+    controls(s),
+    text(notice ? `${notice}\n-# ${attemptsLeft(s)}` : `-# ${attemptsLeft(s)}`),
+  ];
+}
+
+/** The whole challenge, with its picture. */
+function challengeMessage(s: Session, notice?: string) {
   return {
-    embeds: [new EmbedBuilder().setColor(COLOR.primary).setImage(`attachment://${FILE}`)],
-    components: buttons(s, lang),
-    files: [new AttachmentBuilder(await picture(s, lang, notice), { name: FILE })],
+    components: components(s, notice),
+    files: [new AttachmentBuilder(s.challenge.image, { name: fileName(s) })],
   };
 }
 
+function endCard(color: number, body: string) {
+  return { components: [card(color, body)], attachments: [] };
+}
+
+// ---------- The panel in the verification channel ----------
+
 function panel(guild: Guild) {
   const cfg = getConfig(guild.id);
-  const lang = guildLang(guild);
-  const e = embed(
-    COLOR.primary,
-    tr(
-      lang,
-      `To get into **${guild.name}**, show you are not a robot: press **Verify me** and pick the right squares.\n\n` +
-        `You have ${MAX_FAILURES} attempts. After ${MAX_FAILURES} misses you will have to wait ${cfg.captchaTimeoutMinutes} minutes.`,
-      `Pour accéder à **${guild.name}**, prouve que tu n'es pas un robot : clique sur **Me vérifier** et sélectionne les bonnes cases.\n\n` +
-        `Tu as ${MAX_FAILURES} essais. Après ${MAX_FAILURES} échecs, il faudra attendre ${cfg.captchaTimeoutMinutes} minutes.`
-    ),
-    tr(lang, '👋 Welcome!', '👋 Bienvenue !')
-  );
-  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder()
-      .setCustomId('captcha:start')
-      .setLabel(tr(lang, 'Verify me', 'Me vérifier'))
-      .setEmoji('🔐')
-      .setStyle(ButtonStyle.Success)
-  );
-  return { embeds: [e], components: [row] };
+  const container = new ContainerBuilder()
+    .setAccentColor(COLOR.primary)
+    .addSectionComponents((section) =>
+      section
+        .addTextDisplayComponents(
+          text(
+            `## 🔐 Verification\nTo get into **${guild.name}**, show you are not a robot.\n` +
+              'Press **Verify me**, then tick every square with the object asked.'
+          )
+        )
+        .setButtonAccessory(new ButtonBuilder().setCustomId('captcha:start').setLabel('Verify me').setEmoji('🔐').setStyle(ButtonStyle.Success))
+    )
+    .addSeparatorComponents((sep) => sep.setDivider(true).setSpacing(SeparatorSpacingSize.Small))
+    .addTextDisplayComponents(
+      text(`-# ${cfg.captchaAttempts} attempts, then a ${cfg.captchaTimeoutMinutes}-minute pause. Stuck? Ask a staff member.`)
+    );
+  return { components: [container] };
 }
 
 /** Posts (or refreshes) the panel in the verification channel. */
 export async function ensurePanel(guild: Guild) {
   const cfg = getConfig(guild.id);
   const channel = guild.channels.cache.get(cfg.verifyChannel ?? '');
-  if (!channel?.isTextBased()) return false;
+  if (!channel?.isTextBased() || !verificationOn(cfg)) return false;
   const recent = await channel.messages.fetch({ limit: 10 });
   const mine = recent.find((m) => m.author.id === guild.client.user.id);
-  if (mine) await mine.edit(panel(guild));
-  else await channel.send(panel(guild));
+  // A panel from an older version (an embed) cannot become a component layout: replace it.
+  if (mine?.flags.has(MessageFlags.IsComponentsV2)) await mine.edit({ components: panel(guild).components });
+  else {
+    await mine?.delete().catch(() => {});
+    await channel.send({ ...panel(guild), flags: V2 });
+  }
   return true;
 }
 
@@ -138,113 +153,110 @@ function isCorrect(s: Session) {
 
 async function start(i: ButtonInteraction<'cached'> | ChatInputCommandInteraction<'cached'>, test: boolean) {
   const cfg = getConfig(i.guildId);
-  const lang = userLang(i);
   if (!test) {
-    if (!cfg.memberRole) {
-      return replyError(i, tr(lang, 'Verification is not set up yet. A staff member will let you in.', 'La vérification n’est pas encore configurée. Un membre du staff va t’ouvrir l’accès.'));
-    }
-    if (i.member.roles.cache.has(cfg.memberRole)) return replyError(i, tr(lang, 'You are already verified 🙂', 'Tu es déjà vérifié 🙂'));
+    if (!verificationOn(cfg)) return replyError(i, 'Verification is not set up yet. A staff member will let you in.');
+    if (isVerified(i.member, cfg)) return replyError(i, 'You are already verified 🙂');
     const { lockedUntil } = getState(i.guildId, i.user.id);
-    if (lockedUntil > Date.now()) {
-      const when = `<t:${Math.ceil(lockedUntil / 1000)}:R>`;
-      return replyError(i, tr(lang, `Too many misses. You can try again ${when}.`, `Trop d'essais ratés. Tu pourras réessayer ${when}.`));
-    }
+    if (lockedUntil > Date.now()) return replyError(i, `Too many misses. You can try again <t:${Math.ceil(lockedUntil / 1000)}:R>.`);
   }
-  if (!getPool()) {
-    return replyError(
-      i,
-      test
-        ? tr(lang, 'The photo pool is not ready yet — it builds itself on start, or run `npm run captcha:fetch`, then `/captcha reload`.', "La réserve de photos n'est pas prête : elle se construit au démarrage, ou lance `npm run captcha:fetch` puis `/captcha reload`.")
-        : tr(lang, 'Verification is temporarily unavailable. A staff member will let you in.', 'La vérification est momentanément indisponible. Un membre du staff va t’ouvrir l’accès.')
-    );
-  }
+  if (!getPool()) return replyError(i, 'Verification is temporarily unavailable. A staff member will let you in.');
 
-  await i.deferReply({ flags: MessageFlags.Ephemeral });
-  const s = openSession(i.guildId, i.user.id, await makeChallenge(), test);
-  const msg = await i.editReply(await view(s, lang));
-  s.messageId = msg.id;
+  const s = openSession(i.guildId, i.user.id, await nextChallenge(), test);
+  await i.reply({ ...challengeMessage(s), flags: MessageFlags.Ephemeral | V2 });
 }
 
-async function succeed(i: ButtonInteraction<'cached'>, s: Session, lang: Lang) {
+/** Only the buttons changed: the picture already on the message stays. */
+async function redrawButtons(i: ButtonInteraction<'cached'>, s: Session) {
+  try {
+    await i.update({ components: components(s) });
+  } catch (err) {
+    // Should the attachment reference not carry over, send the picture again.
+    log.warn('captcha', `button update failed, sending the picture again: ${(err as Error).message}`);
+    await i.update({ ...challengeMessage(s), attachments: [] });
+  }
+}
+
+async function succeed(i: ButtonInteraction<'cached'>, s: Session) {
   const cfg = getConfig(i.guildId);
+  closeSession(s);
+  await i.deferUpdate();
   let member: GuildMember = i.member;
   try {
     if (cfg.pendingRole && member.roles.cache.has(cfg.pendingRole)) member = await member.roles.remove(cfg.pendingRole, 'Captcha passed');
     if (cfg.memberRole) member = await member.roles.add(cfg.memberRole, 'Captcha passed');
   } catch (err) {
     log.error('captcha', `could not give roles to ${member.user.tag}:`, (err as Error).message);
-    return i.editReply({
-      embeds: [embed(COLOR.warn, tr(lang, 'Captcha passed, but I could not give you access. A staff member will sort it out.', 'Captcha réussi, mais je n’ai pas pu te donner l’accès. Un membre du staff va s’en occuper.'))],
-      components: [],
-      attachments: [],
-    });
+    return i.editReply(endCard(COLOR.warn, '### ⚠️ Captcha passed\nBut I could not give you access. A staff member will sort it out.'));
   }
   markVerified(i.guildId, i.user.id);
-  closeSession(s);
-  logTo(i.guild, `✅ **${member.user.username}** passed the captcha`, `✅ **${member.user.username}** a réussi le captcha`);
-  return i.editReply({
-    embeds: [embed(COLOR.success, tr(lang, `✅ **Verified — welcome to ${i.guild.name}!**`, `✅ **Vérification réussie, bienvenue sur ${i.guild.name} !**`))],
-    components: [],
-    attachments: [],
-  });
+  record(i.guildId, i.user.id, 'pass');
+  logTo(i.guild, `✅ **${member.user.username}** passed the captcha`);
+  return i.editReply(endCard(COLOR.success, `### ✅ You are verified\nWelcome to **${i.guild.name}**!`));
 }
 
-async function fail(i: ButtonInteraction<'cached'>, s: Session, lang: Lang) {
+async function fail(i: ButtonInteraction<'cached'>, s: Session) {
   const cfg = getConfig(i.guildId);
   const failures = getState(i.guildId, i.user.id).failures + 1;
+  record(i.guildId, i.user.id, 'fail');
 
-  if (failures >= MAX_FAILURES) {
+  if (failures >= cfg.captchaAttempts) {
     const until = Date.now() + cfg.captchaTimeoutMinutes * 60_000;
     setState(i.guildId, i.user.id, 0, until);
     closeSession(s);
+    record(i.guildId, i.user.id, 'lockout');
+    await i.update(endCard(COLOR.danger, `### ❌ Too many misses\nYou can try again <t:${Math.ceil(until / 1000)}:R>.`));
     if (i.member.moderatable) {
-      await i.member.timeout(cfg.captchaTimeoutMinutes * 60_000, `Failed the captcha ${MAX_FAILURES} times`).catch(() => {});
+      await i.member.timeout(cfg.captchaTimeoutMinutes * 60_000, `Failed the captcha ${cfg.captchaAttempts} times`).catch(() => {});
     }
-    const name = i.user.username;
-    logTo(
-      i.guild,
-      `⛔ **${name}** failed the captcha ${MAX_FAILURES} times (${cfg.captchaTimeoutMinutes} min timeout)`,
-      `⛔ **${name}** a raté le captcha ${MAX_FAILURES} fois (pause de ${cfg.captchaTimeoutMinutes} min)`
-    );
-    const when = `<t:${Math.ceil(until / 1000)}:R>`;
-    return i.editReply({
-      embeds: [embed(COLOR.danger, tr(lang, `❌ Missed ${MAX_FAILURES} times. You can try again ${when}.`, `❌ Raté ${MAX_FAILURES} fois. Tu pourras réessayer ${when}.`))],
-      components: [],
-      attachments: [],
-    });
+    logTo(i.guild, `⛔ **${i.user.username}** failed the captcha ${cfg.captchaAttempts} times (${cfg.captchaTimeoutMinutes} min timeout)`);
+    return;
   }
 
   setState(i.guildId, i.user.id, failures, 0);
-  s.challenge = await makeChallenge();
-  s.selected.clear();
-  const left = MAX_FAILURES - failures;
-  const notice = tr(
-    lang,
-    `Please try again — ${left} attempt${left > 1 ? 's' : ''} left`,
-    `Réessayez — ${left} essai${left > 1 ? 's' : ''} restant${left > 1 ? 's' : ''}`
-  );
-  return i.editReply({ ...(await view(s, lang, notice)), attachments: [] });
+  // reCAPTCHA's own wording.
+  const notice = s.challenge.required.length && !s.selected.size ? '❌ **Please select all matching images.**' : '❌ **Please try again.**';
+  nextRound(s, await nextChallenge());
+  return i.update({ ...challengeMessage(s, notice), attachments: [] });
 }
 
-async function testResult(i: ButtonInteraction<'cached'>, s: Session, correct: boolean, lang: Lang) {
+/** The picture again, with the expected answer: for staff trying the captcha. */
+function testResultView(s: Session, correct: boolean) {
+  const list = (ns: number[]) =>
+    ns
+      .map((n) => n + 1)
+      .sort((a, b) => a - b)
+      .join(', ') || 'none';
+  const body = [
+    correct ? '### 🧪 Test passed' : '### 🧪 Test failed',
+    `Target: **${promptFor(s.challenge.target)}**`,
+    `Squares to tick: **${list(s.challenge.required)}**`,
+    `Either way: ${list(s.challenge.optional)}`,
+    `Your squares: **${list([...s.selected])}**`,
+  ].join('\n');
+  const container = new ContainerBuilder()
+    .setAccentColor(correct ? COLOR.success : COLOR.danger)
+    .addMediaGalleryComponents((g) => g.addItems((item) => item.setURL(`attachment://${fileName(s)}`)))
+    .addTextDisplayComponents(text(body))
+    .addActionRowComponents(
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder().setCustomId('captcha:retest').setLabel('Play again').setEmoji('🔁').setStyle(ButtonStyle.Primary)
+      )
+    );
+  return { components: [container] };
+}
+
+async function testResult(i: ButtonInteraction<'cached'>, s: Session, correct: boolean) {
   closeSession(s);
-  const list = (ns: number[]) => ns.map((n) => n + 1).sort((a, b) => a - b).join(', ') || tr(lang, 'none', 'aucune');
-  const e = new EmbedBuilder()
-    .setColor(correct ? COLOR.success : COLOR.danger)
-    .setTitle(correct ? tr(lang, '🧪 Test passed', '🧪 Test réussi') : tr(lang, '🧪 Test failed', '🧪 Test raté'))
-    .setDescription(
-      [
-        `${tr(lang, 'Target:', 'Consigne :')} **${promptFor(s.challenge.target, lang)}**`,
-        `${tr(lang, 'Squares to tick:', 'Cases à cocher :')} **${list(s.challenge.required)}**`,
-        `${tr(lang, 'Either way:', 'Au choix :')} ${list(s.challenge.optional)}`,
-        `${tr(lang, 'Your squares:', 'Tes cases :')} **${list([...s.selected])}**`,
-      ].join('\n')
-    )
-    .setImage(`attachment://${FILE}`);
-  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder().setCustomId('captcha:retest').setLabel(tr(lang, 'Play again', 'Rejouer')).setEmoji('🔁').setStyle(ButtonStyle.Primary)
-  );
-  return i.editReply({ embeds: [e], components: [row], files: [new AttachmentBuilder(await picture(s, lang), { name: FILE })], attachments: [] });
+  return i.update(testResultView(s, correct));
+}
+
+/** The layouts, for the offline self-test. */
+export const captchaViews = { challengeMessage, panel, testResultView };
+
+async function expired(i: MessageComponentInteraction<'cached'>) {
+  const body = '### ⌛ This captcha has expired\nStart again from the verification channel.';
+  if (i.message.flags.has(MessageFlags.IsComponentsV2)) return i.update(endCard(COLOR.warn, body));
+  return replyError(i, 'This captcha has expired. Start again from the verification channel.');
 }
 
 // ---------- Arrivals ----------
@@ -276,13 +288,14 @@ async function onJoin(member: GuildMember) {
   const name = member.user.username;
   if (cfg.quarantineRole && cfg.quarantineBots.length && (await joinedViaQuarantineBot(member, cfg.quarantineBots))) {
     await member.roles.add(cfg.quarantineRole, 'Brought in by a member-pushing bot');
-    logTo(member.guild, `🙈 **${name}** was brought in by a bot: quarantined`, `🙈 **${name}** est arrivé via un bot : mis en quarantaine`);
+    record(member.guild.id, member.id, 'quarantine');
+    logTo(member.guild, `🙈 **${name}** was brought in by a bot: quarantined`);
     return;
   }
-  if (cfg.pendingRole && cfg.memberRole) {
-    await member.roles.add(cfg.pendingRole, 'Waiting for the captcha');
-    logTo(member.guild, `👋 **${name}** joined, captcha pending`, `👋 **${name}** est arrivé, captcha en attente`);
-  }
+  if (!verificationOn(cfg)) return;
+  record(member.guild.id, member.id, 'join');
+  if (cfg.pendingRole) await member.roles.add(cfg.pendingRole, 'Waiting for the captcha');
+  logTo(member.guild, `👋 **${name}** joined, captcha pending`);
 }
 
 // ---------- Feature ----------
@@ -292,94 +305,95 @@ export const captchaFeature: Feature = {
 
   commands: [
     {
-      data: loc(new SlashCommandBuilder(), 'captcha', ['Verification when members join', 'Vérification à l’arrivée'])
-        .addSubcommand((s) => loc(s, 'test', ['Try the captcha without touching your roles', 'Tester le captcha sans toucher à tes rôles']))
+      data: new SlashCommandBuilder()
+        .setName('captcha')
+        .setDescription('Verification when members join')
+        .addSubcommand((s) => s.setName('test').setDescription('Try the captcha without touching your roles'))
         .addSubcommand((s) =>
-          loc(s, 'reset', ['Clear a member’s failed attempts and timeout', 'Effacer les essais ratés et la pause d’un membre']).addUserOption((o) =>
-            loc(o, ['member', 'membre'], ['Member', 'Membre']).setRequired(true)
-          )
+          s
+            .setName('reset')
+            .setDescription('Clear a member’s failed attempts and timeout')
+            .addUserOption((o) => o.setName('member').setDescription('Member').setRequired(true))
         )
-        .addSubcommand((s) => loc(s, 'panel', ['Post the panel in the verification channel again', 'Remettre le panneau dans le salon de vérification']))
-        .addSubcommand((s) => loc(s, 'reload', ['Reload the photo pool', 'Recharger la réserve de photos'])),
+        .addSubcommand((s) => s.setName('panel').setDescription('Post the panel in the verification channel again'))
+        .addSubcommand((s) => s.setName('reload').setDescription('Reload the photo database')),
       async run(i) {
         if (!(await requirePrivileged(i))) return;
-        const lang = userLang(i);
         const sub = i.options.getSubcommand();
         if (sub === 'test') return start(i, true);
         if (sub === 'reset') {
           const member = i.options.getMember('member');
-          if (!member) return replyError(i, tr(lang, 'Member not found.', 'Membre introuvable.'));
+          if (!member) return replyError(i, 'Member not found.');
           setState(i.guildId, member.id, 0, 0);
           if (member.isCommunicationDisabled()) await member.timeout(null).catch(() => {});
-          return i.reply({ embeds: [ok(tr(lang, `Attempts cleared for ${member}.`, `Essais de ${member} remis à zéro.`))], flags: MessageFlags.Ephemeral });
+          return i.reply({ embeds: [ok(`Attempts cleared for ${member}.`)], flags: MessageFlags.Ephemeral });
         }
         if (sub === 'panel') {
           const done = await ensurePanel(i.guild);
           return done
-            ? i.reply({ embeds: [ok(tr(lang, 'Verification panel updated.', 'Panneau de vérification à jour.'))], flags: MessageFlags.Ephemeral })
-            : replyError(i, tr(lang, 'No verification channel — pick one in `/setup`.', 'Aucun salon de vérification : choisis-en un dans `/setup`.'));
+            ? i.reply({ embeds: [ok('Verification panel updated.')], flags: MessageFlags.Ephemeral })
+            : replyError(i, 'Verification is not set up — open `/setup` (the quick setup does it in one click).');
         }
         const pool = reloadPool();
-        return pool
-          ? i.reply({
-              embeds: [ok(tr(lang, `Pool reloaded: ${pool.images.length} photos, ${pool.classes.length} categories.`, `Réserve rechargée : ${pool.images.length} photos, ${pool.classes.length} catégories.`))],
-              flags: MessageFlags.Ephemeral,
-            })
-          : replyError(i, tr(lang, 'No photo pool found.', 'Aucune réserve de photos trouvée.'));
+        if (!pool) return replyError(i, 'No photo database found.');
+        await i.deferReply({ flags: MessageFlags.Ephemeral });
+        await prepareChallenges();
+        return i.editReply({ embeds: [ok(`Photos reloaded: ${pool.images.length} photos, ${pool.classes.length} categories.`)] });
       },
     },
   ],
 
   components: {
-    async captcha(i, [action, arg]) {
+    async captcha(i, [action, id, arg]) {
       if (!i.isButton()) return;
-      const lang = userLang(i);
       if (action === 'start') return start(i, false);
       if (action === 'retest') {
-        if (!isPrivileged(i.member)) return replyError(i, tr(lang, 'Staff only.', 'Réservé au staff.'));
+        if (!isPrivileged(i.member)) return replyError(i, 'Staff only.');
         return start(i, true);
       }
 
-      const s = getSession(i.guildId, i.user.id);
-      if (!s || s.messageId !== i.message.id) {
-        return i.update({
-          embeds: [embed(COLOR.warn, tr(lang, 'This captcha has expired. Start again from the verification channel.', 'Ce captcha a expiré. Relance la vérification.'))],
-          components: [],
-          attachments: [],
-        });
-      }
+      const s = getSession(i.guildId, i.user.id, id);
+      if (!s) return expired(i);
 
       if (action === 't') {
         const n = Number(arg);
         if (s.selected.has(n)) s.selected.delete(n);
         else s.selected.add(n);
-        return i.update({ components: buttons(s, lang) });
+        return redrawButtons(i, s);
       }
-
-      await i.deferUpdate();
+      if (action === 'help') {
+        return i.reply({
+          components: [
+            card(
+              COLOR.primary,
+              '### How to pass\n' +
+                `1. Look for **${promptFor(s.challenge.target)}** in the picture.\n` +
+                '2. Tick every square that shows a part of one — the buttons are laid out like the squares.\n' +
+                '3. Press **Verify**. If there is none, press **Skip** without ticking anything.\n\n' +
+                '🔄 gives you another picture.'
+            ),
+          ],
+          flags: MessageFlags.Ephemeral | V2,
+        });
+      }
       if (action === 'new') {
-        if (s.refreshes >= MAX_REFRESH) return;
+        if (s.refreshes >= MAX_REFRESH) return i.deferUpdate();
         s.refreshes++;
-        s.challenge = await makeChallenge();
-        s.selected.clear();
-        return i.editReply({ ...(await view(s, lang)), attachments: [] });
+        nextRound(s, await nextChallenge());
+        return i.update({ ...challengeMessage(s), attachments: [] });
       }
       if (action === 'ok') {
         const correct = isCorrect(s);
-        if (s.test) return testResult(i, s, correct, lang);
-        return correct ? succeed(i, s, lang) : fail(i, s, lang);
+        if (s.test) return testResult(i, s, correct);
+        return correct ? succeed(i, s) : fail(i, s);
       }
     },
   },
 
   init(client) {
-    // The console of a hosting panel is not a shell, so the pool builds itself on start.
-    if (!getPool() && process.env.CAPTCHA_AUTOFETCH !== '0') {
-      log.info('captcha', 'No photo pool in the current format: building it in the background (a few minutes)…');
-      buildPool((msg) => log.info('captcha', msg))
-        .then(() => reloadPool())
-        .catch((err) => log.error('captcha', 'could not build the photo pool:', err));
-    }
+    if (dropOutdatedExtras()) log.info('captcha', 'removed the photos built by an older Ditto: they now ship with it');
+    // Draw the parts that never change and a few challenges in advance.
+    prepareChallenges().catch((err) => log.error('captcha', 'could not prepare challenges:', err));
 
     client.on(Events.GuildMemberAdd, (member) => {
       onJoin(member).catch((err) => log.warn('captcha', err.message));
@@ -397,7 +411,7 @@ export const captchaFeature: Feature = {
   async guildReady(guild) {
     if (await ensurePanel(guild).catch(() => false)) {
       const pool = getPool();
-      log.info('captcha', `${guild.name}: panel ready, pool ${pool ? `${pool.images.length} photos` : 'missing'}`);
+      log.info('captcha', `${guild.name}: panel ready, ${pool ? `${pool.images.length} photos` : 'no photos'}`);
     }
   },
 };

@@ -1,12 +1,6 @@
-import {
-  PermissionFlagsBits,
-  type GuildMember,
-  type MessageComponentInteraction,
-  type RepliableInteraction,
-} from 'discord.js';
+import { PermissionFlagsBits, type GuildMember, type MessageComponentInteraction, type RepliableInteraction } from 'discord.js';
 import { env } from '../env.js';
 import { getConfig } from './config.js';
-import { tr, userLang } from './i18n.js';
 import { replyError } from './ui.js';
 
 type CachedReplyable = RepliableInteraction<'cached'> | MessageComponentInteraction<'cached'>;
@@ -29,12 +23,12 @@ export function canModerateVoice(member: GuildMember) {
 
 export async function requireVoiceMod(i: CachedReplyable) {
   if (canModerateVoice(i.member)) return true;
-  await replyError(i, tr(userLang(i), 'You need the **Move Members** permission.', 'Il te faut la permission **Déplacer des membres**.'));
+  await replyError(i, 'You need the **Move Members** permission, or a staff role.');
   return false;
 }
 
 export async function requirePrivileged(i: CachedReplyable) {
   if (isPrivileged(i.member)) return true;
-  await replyError(i, tr(userLang(i), 'Staff only.', 'Réservé au staff.'));
+  await replyError(i, 'Staff only.');
   return false;
 }

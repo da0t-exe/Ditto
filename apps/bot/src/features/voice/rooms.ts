@@ -10,7 +10,6 @@ import {
 } from 'discord.js';
 import { getConfig } from '../../core/config.js';
 import { db } from '../../core/db.js';
-import { loc, tr, userLang } from '../../core/i18n.js';
 import { log } from '../../core/log.js';
 import { logTo } from '../../core/logs.js';
 import { canModerateVoice } from '../../core/perms.js';
@@ -30,10 +29,10 @@ interface Defaults {
 }
 
 const insertRoom = db.prepare('INSERT OR IGNORE INTO rooms (channel_id, guild_id, defaults, owner_id) VALUES (?, ?, ?, NULL)');
-const selectRoom = db.prepare<[string], { defaults: string; owner_id: string | null }>(
-  'SELECT defaults, owner_id FROM rooms WHERE channel_id = ?'
-);
+const selectRoom = db.prepare<[string], { defaults: string; owner_id: string | null }>('SELECT defaults, owner_id FROM rooms WHERE channel_id = ?');
 const setOwner = db.prepare('UPDATE rooms SET owner_id = ? WHERE channel_id = ?');
+const roomsOf = db.prepare<[string], { channel_id: string }>('SELECT channel_id FROM rooms WHERE guild_id = ?');
+const deleteRoom = db.prepare('DELETE FROM rooms WHERE channel_id = ?');
 
 function snapshot(channel: VoiceBasedChannel): Defaults {
   return {
@@ -67,7 +66,7 @@ async function reset(channel: VoiceBasedChannel, d: Defaults) {
     permissionOverwrites: toOverwrites(d),
     reason: 'Room empty: back to normal',
   });
-  logTo(channel.guild, `♻️ ${channel} is back to normal`, `♻️ ${channel} est revenue à la normale`);
+  logTo(channel.guild, `♻️ ${channel} is back to normal`);
 }
 
 async function onVoice(oldState: VoiceState, newState: VoiceState) {
@@ -94,9 +93,14 @@ async function onVoice(oldState: VoiceState, newState: VoiceState) {
   }
 }
 
-/** Records each room's original state (once) and resets rooms left empty. */
+/**
+ * Records each room's original state and resets rooms left empty. A room taken out of
+ * /setup is forgotten, so picking it again records its state as it is then.
+ */
 export async function prepareRooms(guild: Guild) {
-  for (const id of getConfig(guild.id).rooms) {
+  const picked = getConfig(guild.id).rooms;
+  for (const { channel_id } of roomsOf.all(guild.id)) if (!picked.includes(channel_id)) deleteRoom.run(channel_id);
+  for (const id of picked) {
     const channel = guild.channels.cache.get(id);
     if (!channel?.isVoiceBased()) continue;
     insertRoom.run(channel.id, guild.id, JSON.stringify(snapshot(channel)));
@@ -111,77 +115,76 @@ export async function prepareRooms(guild: Guild) {
 }
 
 export const roomCommand: Command = {
-  data: loc(new SlashCommandBuilder(), 'room', ['Customise the room you are in (if you own it)', 'Personnaliser la salle où tu es (si tu en es propriétaire)'])
+  data: new SlashCommandBuilder()
+    .setName('room')
+    .setDescription('Customise the room you are in (if you own it)')
     .addSubcommand((s) =>
-      loc(s, ['name', 'nom'], ['Rename the room', 'Renommer la salle']).addStringOption((o) =>
-        loc(o, ['text', 'texte'], ['New name', 'Nouveau nom']).setMaxLength(50).setRequired(true)
-      )
+      s
+        .setName('name')
+        .setDescription('Rename the room')
+        .addStringOption((o) => o.setName('text').setDescription('New name').setMaxLength(50).setRequired(true))
     )
     .addSubcommand((s) =>
-      loc(s, ['limit', 'limite'], ['Number of slots (0 = no limit)', 'Nombre de places (0 = illimité)']).addIntegerOption((o) =>
-        loc(o, ['slots', 'places'], ['Slots', 'Places']).setMinValue(0).setMaxValue(99).setRequired(true)
-      )
+      s
+        .setName('limit')
+        .setDescription('Number of slots (0 = no limit)')
+        .addIntegerOption((o) => o.setName('slots').setDescription('Slots').setMinValue(0).setMaxValue(99).setRequired(true))
     )
-    .addSubcommand((s) => loc(s, ['lock', 'verrouiller'], ['Nobody else can join, except guests', 'Plus personne ne peut entrer, sauf les invités']))
-    .addSubcommand((s) => loc(s, ['unlock', 'deverrouiller'], ['Open the room again', 'Rouvrir la salle']))
+    .addSubcommand((s) => s.setName('lock').setDescription('Nobody else can join, except guests'))
+    .addSubcommand((s) => s.setName('unlock').setDescription('Open the room again'))
     .addSubcommand((s) =>
-      loc(s, ['invite', 'inviter'], ['Let a member in', 'Autoriser un membre à entrer']).addUserOption((o) =>
-        loc(o, ['member', 'membre'], ['Member', 'Membre']).setRequired(true)
-      )
+      s
+        .setName('invite')
+        .setDescription('Let a member in')
+        .addUserOption((o) => o.setName('member').setDescription('Member').setRequired(true))
     )
     .addSubcommand((s) =>
-      loc(s, ['transfer', 'transferer'], ['Give the room to someone else', 'Donner la salle à quelqu’un d’autre']).addUserOption((o) =>
-        loc(o, ['member', 'membre'], ['New owner', 'Nouveau propriétaire']).setRequired(true)
-      )
+      s
+        .setName('transfer')
+        .setDescription('Give the room to someone else')
+        .addUserOption((o) => o.setName('member').setDescription('New owner').setRequired(true))
     ),
   async run(i) {
-    const lang = userLang(i);
     const channel = i.member.voice.channel;
     const room = roomOf(i.guildId, channel?.id ?? null);
-    if (!channel || !room) return replyError(i, tr(lang, 'Join one of the rooms first.', 'Rejoins une des salles vocales d’abord.'));
+    if (!channel || !room) return replyError(i, 'Join one of the rooms first.');
     if (room.ownerId !== i.user.id && !canModerateVoice(i.member)) {
-      return replyError(
-        i,
-        tr(lang, `Only the room’s owner (<@${room.ownerId}>) can change it.`, `Seul le propriétaire de la salle (<@${room.ownerId}>) peut la modifier.`)
-      );
+      return replyError(i, room.ownerId ? `Only the room’s owner (<@${room.ownerId}>) can change it.` : 'Only the room’s owner can change it.');
     }
     const cfg = getConfig(i.guildId);
     const sub = i.options.getSubcommand();
-    const reply = (en: string, fr: string) => i.reply({ embeds: [ok(tr(lang, en, fr))], flags: MessageFlags.Ephemeral });
+    const reply = (message: string) => i.reply({ embeds: [ok(message)], flags: MessageFlags.Ephemeral });
 
     if (sub === 'name') {
       await channel.setName(i.options.getString('text', true));
-      return reply(
-        'Room renamed. (Discord allows 2 renames every 10 minutes.)',
-        'Salle renommée. (Discord limite les renommages à 2 toutes les 10 minutes.)'
-      );
+      return reply('Room renamed. (Discord allows 2 renames every 10 minutes.)');
     }
     if (sub === 'limit') {
       const slots = i.options.getInteger('slots', true);
-      if (!('setUserLimit' in channel)) return replyError(i, tr(lang, 'This channel has no user limit.', 'Pas de limite possible ici.'));
+      if (!('setUserLimit' in channel)) return replyError(i, 'This channel has no user limit.');
       await channel.setUserLimit(slots);
-      return slots ? reply(`Limit set to ${slots}.`, `Limite fixée à ${slots}.`) : reply('Limit removed.', 'Limite retirée.');
+      return slots ? reply(`Limit set to ${slots}.`) : reply('Limit removed.');
     }
     if (sub === 'lock') {
       await channel.permissionOverwrites.edit(i.guild.roles.everyone, { Connect: false });
       if (cfg.memberRole) await channel.permissionOverwrites.edit(cfg.memberRole, { Connect: false });
       for (const m of channel.members.values()) await channel.permissionOverwrites.edit(m, { Connect: true });
-      return reply('Room locked. Use `/room invite` to let someone in.', 'Salle verrouillée. Utilise `/room inviter` pour laisser entrer quelqu’un.');
+      return reply('Room locked. Use `/room invite` to let someone in.');
     }
     if (sub === 'unlock') {
       await channel.permissionOverwrites.set(toOverwrites(room.defaults));
-      return reply('Room open again.', 'Salle rouverte.');
+      return reply('Room open again.');
     }
     const target = i.options.getMember('member');
-    if (!target) return replyError(i, tr(lang, 'Member not found.', 'Membre introuvable.'));
+    if (!target) return replyError(i, 'Member not found.');
     if (sub === 'invite') {
       await channel.permissionOverwrites.edit(target, { Connect: true, ViewChannel: true });
-      return reply(`${target} can join.`, `${target} peut entrer.`);
+      return reply(`${target} can join.`);
     }
     // transfer
-    if (!channel.members.has(target.id)) return replyError(i, tr(lang, `${target} must be in the room.`, `${target} doit être dans la salle.`));
+    if (!channel.members.has(target.id)) return replyError(i, `${target} must be in the room.`);
     setOwner.run(target.id, channel.id);
-    return reply(`${target} now owns the room.`, `${target} est maintenant propriétaire de la salle.`);
+    return reply(`${target} now owns the room.`);
   },
 };
 

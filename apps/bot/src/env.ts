@@ -16,4 +16,12 @@ export const env = {
     .map((s) => s.trim())
     .filter(Boolean),
   dataDir: process.env.DATA_DIR?.trim() || path.join(ROOT, 'data'),
+  /** The web dashboard (DASHBOARD=0 turns it off). */
+  dashboard: process.env.DASHBOARD?.trim() !== '0',
+  /** Pterodactyl gives each server a public port in SERVER_PORT: the dashboard uses it. */
+  dashboardPort: Number(process.env.DASHBOARD_PORT?.trim() || process.env.SERVER_PORT?.trim() || 3000),
+  dashboardHost: process.env.DASHBOARD_HOST?.trim() || '0.0.0.0',
+  /** Public address of the dashboard, used in the links Ditto sends (e.g. https://ditto.example.com). */
+  dashboardUrl: process.env.DASHBOARD_URL?.trim().replace(/\/+$/, '') || null,
+  dashboardPassword: process.env.DASHBOARD_PASSWORD?.trim() || null,
 };

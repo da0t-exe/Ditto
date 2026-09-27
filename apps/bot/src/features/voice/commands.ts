@@ -10,7 +10,6 @@ import {
   type VoiceBasedChannel,
 } from 'discord.js';
 import { getConfig } from '../../core/config.js';
-import { guildLang, loc, tr, userLang } from '../../core/i18n.js';
 import { logTo } from '../../core/logs.js';
 import { canModerateVoice, requireVoiceMod } from '../../core/perms.js';
 import type { Command, ComponentHandler } from '../../core/types.js';
@@ -35,19 +34,27 @@ async function moveAll(members: GuildMember[], to: VoiceBasedChannel | null) {
 // ---------- /move ----------
 
 const move: Command = {
-  data: loc(new SlashCommandBuilder(), 'move', ['Move members to a voice channel', 'Déplacer des membres vers un salon vocal'])
+  data: new SlashCommandBuilder()
+    .setName('move')
+    .setDescription('Move members to a voice channel')
     .setDefaultMemberPermissions(MOD)
     .addChannelOption((o) =>
-      loc(o, ['to', 'vers'], ['Destination channel', 'Salon de destination']).addChannelTypes(...VOICE_TYPES).setRequired(true)
+      o
+        .setName('to')
+        .setDescription('Destination channel')
+        .addChannelTypes(...VOICE_TYPES)
+        .setRequired(true)
     )
-    .addUserOption((o) => loc(o, ['member', 'membre'], ['Only this member', 'Seulement ce membre']))
-    .addRoleOption((o) => loc(o, 'role', ['Everyone in voice with this role', 'Tous les membres en vocal qui ont ce rôle']))
+    .addUserOption((o) => o.setName('member').setDescription('Only this member'))
+    .addRoleOption((o) => o.setName('role').setDescription('Everyone in voice with this role'))
     .addChannelOption((o) =>
-      loc(o, ['from', 'depuis'], ['This whole channel (default: yours)', 'Tout ce salon (par défaut : le tien)']).addChannelTypes(...VOICE_TYPES)
+      o
+        .setName('from')
+        .setDescription('This whole channel (default: yours)')
+        .addChannelTypes(...VOICE_TYPES)
     ),
   async run(i) {
     if (!(await requireVoiceMod(i))) return;
-    const lang = userLang(i);
     const to = i.options.getChannel('to', true, [...VOICE_TYPES]);
     const member = i.options.getMember('member');
     const role = i.options.getRole('role');
@@ -55,27 +62,24 @@ const move: Command = {
 
     let targets: GuildMember[];
     if (member) {
-      if (!member.voice.channel) return replyError(i, tr(lang, `${member} is not in voice.`, `${member} n'est pas en vocal.`));
+      if (!member.voice.channel) return replyError(i, `${member} is not in voice.`);
       targets = [member];
     } else if (role) {
       targets = i.guild.voiceStates.cache.map((v) => v.member).filter((m): m is GuildMember => !!m?.roles.cache.has(role.id));
     } else if (from) {
       targets = [...from.members.values()];
     } else {
-      return replyError(
-        i,
-        tr(lang, 'Pick a member, a role or a channel to move from (or join a voice channel).', 'Précise un membre, un rôle ou un salon de départ (ou rejoins un salon vocal).')
-      );
+      return replyError(i, 'Pick a member, a role or a channel to move from (or join a voice channel).');
     }
     targets = targets.filter((m) => m.voice.channelId !== to.id);
-    if (!targets.length) return replyError(i, tr(lang, 'Nobody to move.', 'Personne à déplacer.'));
+    if (!targets.length) return replyError(i, 'Nobody to move.');
 
     await i.deferReply();
     const moved = await moveAll(targets, to);
     const by = i.user.username;
-    logTo(i.guild, `🔀 **${by}** moved ${moved} member(s) to ${to}`, `🔀 **${by}** a déplacé ${moved} membre(s) vers ${to}`);
+    logTo(i.guild, `🔀 **${by}** moved ${moved} member(s) to ${to}`);
     return i.editReply({
-      embeds: [ok(tr(lang, `${moved}/${targets.length} member(s) moved to ${to}.`, `${moved}/${targets.length} membre(s) déplacé(s) vers ${to}.`))],
+      embeds: [ok(`${moved}/${targets.length} member(s) moved to ${to}.`)],
     });
   },
 };
@@ -85,19 +89,24 @@ const move: Command = {
 const gatherRuns = new Map<string, { origins: Map<string, string>; to: string; expires: number }>();
 
 const gather: Command = {
-  data: loc(new SlashCommandBuilder(), 'gather', ['Pull everyone in voice into one channel', 'Rassembler tous les membres en vocal dans un salon'])
+  data: new SlashCommandBuilder()
+    .setName('gather')
+    .setDescription('Pull everyone in voice into one channel')
     .setDefaultMemberPermissions(MOD)
     .addChannelOption((o) =>
-      loc(o, ['to', 'vers'], ['Where to gather everyone', 'Salon de rassemblement']).addChannelTypes(...VOICE_TYPES).setRequired(true)
+      o
+        .setName('to')
+        .setDescription('Where to gather everyone')
+        .addChannelTypes(...VOICE_TYPES)
+        .setRequired(true)
     ),
   async run(i) {
     if (!(await requireVoiceMod(i))) return;
-    const lang = userLang(i);
     const to = i.options.getChannel('to', true, [...VOICE_TYPES]);
     const targets = i.guild.voiceStates.cache
       .filter((v) => v.channelId && v.channelId !== to.id && v.channelId !== i.guild.afkChannelId && v.member && !v.member.user.bot)
       .map((v) => v.member!);
-    if (!targets.length) return replyError(i, tr(lang, 'Nobody to gather.', 'Personne à rassembler.'));
+    if (!targets.length) return replyError(i, 'Nobody to gather.');
 
     await i.deferReply();
     const origins = new Map(targets.map((m) => [m.id, m.voice.channelId!]));
@@ -105,16 +114,12 @@ const gather: Command = {
     gatherRuns.set(i.id, { origins, to: to.id, expires: Date.now() + 3 * 3600_000 });
 
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`gather:back:${i.id}`)
-        .setLabel(tr(guildLang(i.guild), 'Send everyone back', 'Renvoyer chacun chez soi'))
-        .setEmoji('↩️')
-        .setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder().setCustomId(`gather:back:${i.id}`).setLabel('Send everyone back').setEmoji('↩️').setStyle(ButtonStyle.Secondary)
     );
     const by = i.user.username;
-    logTo(i.guild, `📣 **${by}** gathered ${moved} member(s) in ${to}`, `📣 **${by}** a rassemblé ${moved} membre(s) dans ${to}`);
+    logTo(i.guild, `📣 **${by}** gathered ${moved} member(s) in ${to}`);
     return i.editReply({
-      embeds: [ok(tr(lang, `${moved} member(s) gathered in ${to}.`, `${moved} membre(s) rassemblé(s) dans ${to}.`))],
+      embeds: [ok(`${moved} member(s) gathered in ${to}.`)],
       components: [row],
     });
   },
@@ -138,9 +143,8 @@ export const gatherBack: ComponentHandler = async (i, [action, runId]) => {
       /* ignore */
     }
   });
-  const lang = guildLang(i.guild);
   return i.editReply({
-    embeds: [ok(tr(lang, `${back} member(s) sent back to their channel.`, `${back} membre(s) renvoyé(s) dans leur salon.`))],
+    embeds: [ok(`${back} member(s) sent back to their channel.`)],
     components: [],
   });
 };
@@ -148,22 +152,26 @@ export const gatherBack: ComponentHandler = async (i, [action, runId]) => {
 // ---------- /split ----------
 
 const split: Command = {
-  data: loc(new SlashCommandBuilder(), 'split', ['Shuffle a channel into random teams', 'Répartir un salon en équipes au hasard'])
+  data: new SlashCommandBuilder()
+    .setName('split')
+    .setDescription('Shuffle a channel into random teams')
     .setDefaultMemberPermissions(MOD)
-    .addIntegerOption((o) => loc(o, ['teams', 'equipes'], ['Number of teams', "Nombre d'équipes"]).setMinValue(2).setMaxValue(4).setRequired(true))
+    .addIntegerOption((o) => o.setName('teams').setDescription('Number of teams').setMinValue(2).setMaxValue(4).setRequired(true))
     .addChannelOption((o) =>
-      loc(o, ['from', 'depuis'], ['Channel to split (default: yours)', 'Salon à répartir (par défaut : le tien)']).addChannelTypes(...VOICE_TYPES)
+      o
+        .setName('from')
+        .setDescription('Channel to split (default: yours)')
+        .addChannelTypes(...VOICE_TYPES)
     ),
   async run(i) {
     if (!(await requireVoiceMod(i))) return;
-    const lang = userLang(i);
     const count = i.options.getInteger('teams', true);
     const from = i.options.getChannel('from', false, [...VOICE_TYPES]) ?? i.member.voice.channel;
-    if (!from) return replyError(i, tr(lang, 'Join a voice channel or set `from`.', 'Rejoins un salon vocal ou précise `depuis`.'));
+    if (!from) return replyError(i, 'Join a voice channel or set `from`.');
 
     const players = shuffle(humans(from));
     if (players.length < count) {
-      return replyError(i, tr(lang, `${from} needs at least ${count} people.`, `Il faut au moins ${count} personnes dans ${from}.`));
+      return replyError(i, `${from} needs at least ${count} people.`);
     }
 
     const cfg = getConfig(i.guildId);
@@ -172,7 +180,7 @@ const split: Command = {
     );
     const channels = [from, ...candidates.slice(0, count - 1)];
     if (channels.length < count) {
-      return replyError(i, tr(lang, `Not enough empty channels for ${count} teams.`, `Pas assez de salons vides pour ${count} équipes.`));
+      return replyError(i, `Not enough empty channels for ${count} teams.`);
     }
 
     await i.deferReply();
@@ -181,16 +189,16 @@ const split: Command = {
 
     const e = new EmbedBuilder()
       .setColor(COLOR.primary)
-      .setTitle(tr(lang, `🎲 ${count} teams`, `🎲 ${count} équipes`))
+      .setTitle(`🎲 ${count} teams`)
       .addFields(
         teams.map((t, k) => ({
-          name: `${tr(lang, 'Team', 'Équipe')} ${k + 1} — ${t.channel.name}`,
+          name: `Team ${k + 1} — ${t.channel.name}`,
           value: t.members.map(String).join('\n') || '—',
           inline: true,
         }))
       );
     const by = i.user.username;
-    logTo(i.guild, `🎲 **${by}** split ${from} into ${count} teams`, `🎲 **${by}** a réparti ${from} en ${count} équipes`);
+    logTo(i.guild, `🎲 **${by}** split ${from} into ${count} teams`);
     return i.editReply({ embeds: [e], allowedMentions: { parse: [] } });
   },
 };
@@ -198,25 +206,31 @@ const split: Command = {
 // ---------- /disconnect ----------
 
 const disconnect: Command = {
-  data: loc(new SlashCommandBuilder(), 'disconnect', ['Disconnect a member or a whole channel from voice', 'Déconnecter du vocal un membre ou tout un salon'])
+  data: new SlashCommandBuilder()
+    .setName('disconnect')
+    .setDescription('Disconnect a member or a whole channel from voice')
     .setDefaultMemberPermissions(MOD)
-    .addUserOption((o) => loc(o, ['member', 'membre'], ['This member', 'Ce membre']))
-    .addChannelOption((o) => loc(o, ['channel', 'salon'], ['This whole channel', 'Tout ce salon']).addChannelTypes(...VOICE_TYPES)),
+    .addUserOption((o) => o.setName('member').setDescription('This member'))
+    .addChannelOption((o) =>
+      o
+        .setName('channel')
+        .setDescription('This whole channel')
+        .addChannelTypes(...VOICE_TYPES)
+    ),
   async run(i) {
     if (!(await requireVoiceMod(i))) return;
-    const lang = userLang(i);
     const member = i.options.getMember('member');
     const channel = i.options.getChannel('channel', false, [...VOICE_TYPES]);
     const targets = member ? (member.voice.channel ? [member] : []) : channel ? humans(channel) : null;
-    if (targets === null) return replyError(i, tr(lang, 'Pick a member or a channel.', 'Précise un membre ou un salon.'));
-    if (!targets.length) return replyError(i, tr(lang, 'Nobody to disconnect.', 'Personne à déconnecter.'));
+    if (targets === null) return replyError(i, 'Pick a member or a channel.');
+    if (!targets.length) return replyError(i, 'Nobody to disconnect.');
 
     await i.deferReply({ flags: MessageFlags.Ephemeral });
     const done = await moveAll(targets, null);
     const by = i.user.username;
-    const where = channel ? ` ${tr(guildLang(i.guild), 'from', 'de')} ${channel}` : '';
-    logTo(i.guild, `🔌 **${by}** disconnected ${done} member(s)${where}`, `🔌 **${by}** a déconnecté ${done} membre(s)${where}`);
-    return i.editReply({ embeds: [ok(tr(lang, `${done} member(s) disconnected.`, `${done} membre(s) déconnecté(s).`))] });
+    const where = channel ? ` from ${channel}` : '';
+    logTo(i.guild, `🔌 **${by}** disconnected ${done} member(s)${where}`);
+    return i.editReply({ embeds: [ok(`${done} member(s) disconnected.`)] });
   },
 };
 
@@ -225,35 +239,35 @@ const disconnect: Command = {
 const shakeRuns = new Map<string, { cancelled: boolean; by: string }>();
 
 const shake: Command = {
-  data: loc(new SlashCommandBuilder(), 'shake', ['Bounce a member through random channels to wake them up', 'Secouer un membre à travers les salons pour le réveiller'])
+  data: new SlashCommandBuilder()
+    .setName('shake')
+    .setDescription('Bounce a member through random channels to wake them up')
     .setDefaultMemberPermissions(MOD)
-    .addUserOption((o) => loc(o, ['member', 'membre'], ['Member to wake up', 'Membre à réveiller']).setRequired(true))
-    .addIntegerOption((o) =>
-      loc(o, ['times', 'coups'], ['Number of moves (default 10)', 'Nombre de déplacements (10 par défaut)']).setMinValue(1).setMaxValue(30)
-    )
+    .addUserOption((o) => o.setName('member').setDescription('Member to wake up').setRequired(true))
+    .addIntegerOption((o) => o.setName('times').setDescription('Number of moves (default 10)').setMinValue(1).setMaxValue(30))
     .addChannelOption((o) =>
-      loc(o, ['to', 'vers'], ['Where to drop them at the end (default: where they were)', 'Où le déposer à la fin (par défaut : là où il était)']).addChannelTypes(
-        ...VOICE_TYPES
-      )
+      o
+        .setName('to')
+        .setDescription('Where to drop them at the end (default: where they were)')
+        .addChannelTypes(...VOICE_TYPES)
     ),
   async run(i) {
     if (!(await requireVoiceMod(i))) return;
-    const lang = userLang(i);
     const target = i.options.getMember('member');
-    if (!target?.voice.channel) return replyError(i, tr(lang, 'This member is not in voice.', "Ce membre n'est pas en vocal."));
+    if (!target?.voice.channel) return replyError(i, 'This member is not in voice.');
     const hits = i.options.getInteger('times') ?? 10;
     const origin = target.voice.channel;
     const finalChannel = i.options.getChannel('to', false, [...VOICE_TYPES]) ?? origin;
     const channels = movableChannels(i.guild);
-    if (channels.length < 2) return replyError(i, tr(lang, 'Not enough voice channels I can use.', 'Pas assez de salons vocaux accessibles.'));
+    if (channels.length < 2) return replyError(i, 'Not enough voice channels I can use.');
 
     const run = { cancelled: false, by: i.user.id };
     shakeRuns.set(i.id, run);
     const stopRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId(`shake:stop:${i.id}`).setLabel('Stop').setEmoji('✋').setStyle(ButtonStyle.Danger)
     );
-    const title = tr(lang, `🫨 Waking up ${target.displayName}`, `🫨 Réveil de ${target.displayName}`);
-    const progress = (n: number) => embed(COLOR.warn, tr(lang, `Shake ${n}/${hits}…`, `Secousse ${n}/${hits}…`), title);
+    const title = `🫨 Waking up ${target.displayName}`;
+    const progress = (n: number) => embed(COLOR.warn, `Shake ${n}/${hits}…`, title);
     await i.reply({ embeds: [progress(0)], components: [stopRow] });
 
     let moved = 0;
@@ -280,17 +294,11 @@ const shake: Command = {
     }
     shakeRuns.delete(i.id);
 
-    const doneTitle = run.cancelled
-      ? tr(lang, '✋ Stopped', '✋ Réveil arrêté')
-      : error
-        ? tr(lang, '⚠️ Interrupted', '⚠️ Réveil interrompu')
-        : tr(lang, '✅ Done', '✅ Réveil terminé');
-    const text =
-      tr(lang, `${target} was shaken ${moved} time(s), then dropped in ${finalChannel}.`, `${target} a été secoué ${moved} fois, puis déposé dans ${finalChannel}.`) +
-      (error ? `\n${error}` : '');
+    const doneTitle = run.cancelled ? '✋ Stopped' : error ? '⚠️ Interrupted' : '✅ Done';
+    const text = `${target} was shaken ${moved} time(s), then dropped in ${finalChannel}.` + (error ? `\n${error}` : '');
     const by = i.user.username;
     const who = target.user.username;
-    logTo(i.guild, `🫨 **${by}** shook **${who}** (${moved} times)`, `🫨 **${by}** a secoué **${who}** (${moved} fois)`);
+    logTo(i.guild, `🫨 **${by}** shook **${who}** (${moved} times)`);
     return i.editReply({ embeds: [embed(error ? COLOR.warn : COLOR.success, text, doneTitle)], components: [] });
   },
 };
@@ -299,7 +307,7 @@ export const shakeStop: ComponentHandler = async (i, [action, runId]) => {
   const run = shakeRuns.get(runId);
   if (action !== 'stop' || !run) return i.deferUpdate();
   if (run.by !== i.user.id && !canModerateVoice(i.member)) {
-    return replyError(i, tr(userLang(i), 'Only staff can stop this.', 'Seul le staff peut arrêter.'));
+    return replyError(i, 'Only staff can stop this.');
   }
   run.cancelled = true;
   return i.deferUpdate();

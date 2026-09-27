@@ -11,7 +11,6 @@ import {
   type VoiceState,
 } from 'discord.js';
 import { db } from '../../core/db.js';
-import { loc, tr, userLang, type Lang } from '../../core/i18n.js';
 import { log } from '../../core/log.js';
 import { logTo } from '../../core/logs.js';
 import { canModerateVoice, requireVoiceMod } from '../../core/perms.js';
@@ -54,13 +53,24 @@ function unlock(channelId: string) {
 
 const guildLocks = (guildId: string) => [...locks.values()].filter((l) => l.guildId === guildId);
 
+/** For the dashboard. */
+export const listLocks = (guildId: string) =>
+  guildLocks(guildId).map((l) => ({ channelId: l.channelId, members: l.members.size, expiresAt: l.expiresAt, createdBy: l.createdBy }));
+
+export function removeLock(guild: Guild, channelId: string, by: string) {
+  if (!locks.has(channelId) || locks.get(channelId)!.guildId !== guild.id) return false;
+  unlock(channelId);
+  logTo(guild, `🔓 **${by}** unlocked <#${channelId}>`);
+  return true;
+}
+
 async function pullBack(member: GuildMember, channelId: string) {
   const channel = member.guild.channels.cache.get(channelId);
   if (!channel?.isVoiceBased()) return;
   try {
     await member.voice.setChannel(channel);
     const name = member.user.username;
-    logTo(member.guild, `🔒 **${name}** pulled back into ${channel}`, `🔒 **${name}** ramené dans ${channel}`);
+    logTo(member.guild, `🔒 **${name}** pulled back into ${channel}`);
   } catch (err) {
     log.warn('lock', `${member.user.tag} -> ${channel.name}: ${(err as Error).message}`);
   }
@@ -100,33 +110,42 @@ function sweepExpired(client: Client) {
     if (l.expiresAt === null || l.expiresAt > now) continue;
     unlock(l.channelId);
     const guild = client.guilds.cache.get(l.guildId);
-    if (guild) logTo(guild, `🔓 Lock on <#${l.channelId}> expired`, `🔓 Verrou de <#${l.channelId}> expiré`);
+    if (guild) logTo(guild, `🔓 Lock on <#${l.channelId}> expired`);
   }
 }
 
 // ---------- Commands ----------
 
 const lockCmd: Command = {
-  data: loc(new SlashCommandBuilder(), 'lock', ['Lock a channel: members who leave are pulled back', 'Verrouiller un salon : ceux qui partent sont ramenés'])
+  data: new SlashCommandBuilder()
+    .setName('lock')
+    .setDescription('Lock a channel: members who leave are pulled back')
     .setDefaultMemberPermissions(PermissionFlagsBits.MoveMembers)
     .addChannelOption((o) =>
-      loc(o, ['channel', 'salon'], ['Channel to lock', 'Salon à verrouiller']).addChannelTypes(...VOICE_TYPES).setRequired(true)
+      o
+        .setName('channel')
+        .setDescription('Channel to lock')
+        .addChannelTypes(...VOICE_TYPES)
+        .setRequired(true)
     )
-    .addStringOption((o) => loc(o, ['duration', 'duree'], ['e.g. 30m, 2h, 1h30 (no limit by default)', 'Ex. 30m, 2h, 1h30 (sans limite par défaut)'])),
+    .addStringOption((o) => o.setName('duration').setDescription('e.g. 30m, 2h, 1h30 (no limit by default)')),
   async run(i) {
     if (!(await requireVoiceMod(i))) return;
-    const lang = userLang(i);
     const channel = i.options.getChannel('channel', true, [...VOICE_TYPES]);
     const raw = i.options.getString('duration');
     const duration = raw ? parseDuration(raw) : null;
     if (raw && duration === null) {
-      return replyError(i, tr(lang, 'Invalid duration. Examples: `30m`, `2h`, `1h30`.', 'Durée invalide. Exemples : `30m`, `2h`, `1h30`.'));
+      return replyError(i, 'Invalid duration. Examples: `30m`, `2h`, `1h30`.');
     }
 
     const lock: Lock = {
       guildId: i.guildId,
       channelId: channel.id,
-      members: new Set(humans(channel).filter((m) => !canModerateVoice(m)).map((m) => m.id)),
+      members: new Set(
+        humans(channel)
+          .filter((m) => !canModerateVoice(m))
+          .map((m) => m.id)
+      ),
       expiresAt: duration ? Date.now() + duration : null,
       createdBy: i.user.id,
     };
@@ -135,56 +154,47 @@ const lockCmd: Command = {
 
     const at = lock.expiresAt ? `<t:${Math.floor(lock.expiresAt / 1000)}:t>` : '';
     const by = i.user.username;
-    logTo(
-      i.guild,
-      `🔒 **${by}** locked ${channel}${at ? ` until ${at}` : ''}`,
-      `🔒 **${by}** a verrouillé ${channel}${at ? ` jusqu'à ${at}` : ''}`
-    );
+    logTo(i.guild, `🔒 **${by}** locked ${channel}${at ? ` until ${at}` : ''}`);
     return i.reply({
-      embeds: [
-        ok(
-          tr(
-            lang,
-            `${channel} is locked${at ? ` until ${at}` : ''}. ${lock.members.size} member(s) tracked; anyone who joins will be tracked too.`,
-            `${channel} est verrouillé${at ? ` jusqu'à ${at}` : ''}. ${lock.members.size} membre(s) suivi(s) ; ceux qui entrent seront suivis aussi.`
-          )
-        ),
-      ],
+      embeds: [ok(`${channel} is locked${at ? ` until ${at}` : ''}. ${lock.members.size} member(s) tracked; anyone who joins will be tracked too.`)],
     });
   },
 };
 
 const unlockCmd: Command = {
-  data: loc(new SlashCommandBuilder(), 'unlock', ['Unlock a channel', 'Déverrouiller un salon'])
+  data: new SlashCommandBuilder()
+    .setName('unlock')
+    .setDescription('Unlock a channel')
     .setDefaultMemberPermissions(PermissionFlagsBits.MoveMembers)
     .addChannelOption((o) =>
-      loc(o, ['channel', 'salon'], ['Channel to unlock', 'Salon à déverrouiller']).addChannelTypes(...VOICE_TYPES).setRequired(true)
+      o
+        .setName('channel')
+        .setDescription('Channel to unlock')
+        .addChannelTypes(...VOICE_TYPES)
+        .setRequired(true)
     ),
   async run(i) {
     if (!(await requireVoiceMod(i))) return;
-    const lang = userLang(i);
     const channel = i.options.getChannel('channel', true, [...VOICE_TYPES]);
-    if (!locks.has(channel.id)) return replyError(i, tr(lang, `${channel} is not locked.`, `${channel} n'est pas verrouillé.`));
+    if (!locks.has(channel.id)) return replyError(i, `${channel} is not locked.`);
     unlock(channel.id);
     const by = i.user.username;
-    logTo(i.guild, `🔓 **${by}** unlocked ${channel}`, `🔓 **${by}** a déverrouillé ${channel}`);
-    return i.reply({ embeds: [ok(tr(lang, `${channel} is unlocked.`, `${channel} est déverrouillé.`))] });
+    logTo(i.guild, `🔓 **${by}** unlocked ${channel}`);
+    return i.reply({ embeds: [ok(`${channel} is unlocked.`)] });
   },
 };
 
-function locksView(guild: Guild, lang: Lang) {
+function locksView(guild: Guild) {
   const list = guildLocks(guild.id);
-  const title = tr(lang, '🔒 Locks', '🔒 Verrous');
-  if (!list.length) return { embeds: [embed(COLOR.neutral, tr(lang, 'No locked channel.', 'Aucun salon verrouillé.'), title)], components: [] };
+  const title = '🔒 Locks';
+  if (!list.length) return { embeds: [embed(COLOR.neutral, 'No locked channel.', title)], components: [] };
   const lines = list.map((l) => {
-    const until = l.expiresAt
-      ? tr(lang, `until <t:${Math.floor(l.expiresAt / 1000)}:t>`, `jusqu'à <t:${Math.floor(l.expiresAt / 1000)}:t>`)
-      : tr(lang, 'no limit', 'sans limite');
-    return `<#${l.channelId}> — ${tr(lang, `${l.members.size} tracked`, `${l.members.size} suivi(s)`)}, ${until}, ${tr(lang, 'by', 'par')} <@${l.createdBy}>`;
+    const until = l.expiresAt ? `until <t:${Math.floor(l.expiresAt / 1000)}:t>` : 'no limit';
+    return `<#${l.channelId}> — ${l.members.size} tracked, ${until}, by <@${l.createdBy}>`;
   });
   const menu = new StringSelectMenuBuilder()
     .setCustomId('lock:unlock')
-    .setPlaceholder(tr(lang, 'Unlock…', 'Déverrouiller…'))
+    .setPlaceholder('Unlock…')
     .addOptions(list.slice(0, 25).map((l) => ({ label: guild.channels.cache.get(l.channelId)?.name ?? l.channelId, value: l.channelId })));
   return {
     embeds: [embed(COLOR.primary, lines.join('\n'), title)],
@@ -193,12 +203,13 @@ function locksView(guild: Guild, lang: Lang) {
 }
 
 const locksCmd: Command = {
-  data: loc(new SlashCommandBuilder(), 'locks', ['List locked channels', 'Voir les salons verrouillés']).setDefaultMemberPermissions(
-    PermissionFlagsBits.MoveMembers
-  ),
+  data: new SlashCommandBuilder()
+    .setName('locks')
+    .setDescription('List locked channels')
+    .setDefaultMemberPermissions(PermissionFlagsBits.MoveMembers),
   async run(i) {
     if (!(await requireVoiceMod(i))) return;
-    return i.reply({ ...locksView(i.guild, userLang(i)), flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
+    return i.reply({ ...locksView(i.guild), flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
   },
 };
 
@@ -208,9 +219,9 @@ export const lockComponent: ComponentHandler = async (i, [action]) => {
   for (const id of i.values) {
     if (!locks.has(id)) continue;
     unlock(id);
-    logTo(i.guild, `🔓 **${by}** unlocked <#${id}>`, `🔓 **${by}** a déverrouillé <#${id}>`);
+    logTo(i.guild, `🔓 **${by}** unlocked <#${id}>`);
   }
-  return i.update(locksView(i.guild, userLang(i)));
+  return i.update(locksView(i.guild));
 };
 
 export const lockCommands = [lockCmd, unlockCmd, locksCmd];

@@ -19,6 +19,7 @@
     "start": "npm run start -w @ditto/bot",
     "dev": "npm run dev -w @ditto/bot",
     "typecheck": "npm run typecheck -w @ditto/bot",
+    "selftest": "npm run selftest -w @ditto/bot",
     "captcha:fetch": "npm run captcha:fetch -w @ditto/bot"
   }
 }

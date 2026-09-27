@@ -35,6 +35,15 @@ db.exec(`
     last_used INTEGER NOT NULL DEFAULT 0
   );
 
+  -- Arrivals, passes and misses, for the dashboard.
+  CREATE TABLE IF NOT EXISTS captcha_log (
+    guild_id TEXT NOT NULL,
+    user_id  TEXT NOT NULL,
+    event    TEXT NOT NULL,
+    at       INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS captcha_log_guild_at ON captcha_log (guild_id, at);
+
   CREATE TABLE IF NOT EXISTS voice_locks (
     channel_id TEXT PRIMARY KEY,
     guild_id   TEXT NOT NULL,

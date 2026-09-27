@@ -2,8 +2,8 @@ import fs from 'node:fs';
 import type { Guild, Message, VoiceBasedChannel } from 'discord.js';
 import { log } from '../../core/log.js';
 import { lavalink, loadEncoded, type LavalinkPlayer } from './engine.js';
-import { ensurePlayable, UserError, type Found, type Source } from './search.js';
-import { directAudioUrl, downloadAudio } from './tools.js';
+import { assertPublicUrl, ensurePlayable, UserError, type Found, type Source } from './search.js';
+import { directAudioUrl, downloadAudio, forgetDirect, isCachedAudio } from './tools.js';
 
 export interface Track extends Found {
   requesterId: string;
@@ -14,6 +14,7 @@ export type FilterName = 'none' | 'bassboost' | 'nightcore' | 'vaporwave' | '8d'
 
 const IDLE_LEAVE_MS = 3 * 60_000; // queue finished
 const EMPTY_LEAVE_MS = 60_000; // nobody left in the channel
+const HISTORY = 25;
 
 // ---------- Routes to a playable track ----------
 
@@ -28,7 +29,7 @@ export type Route = 'lavalink' | 'direct' | 'download';
 const DOWNLOAD_FIRST: Source[] = ['tiktok', 'x', 'instagram'];
 const MAX_DOWNLOAD_SECONDS = 20 * 60;
 
-const isYoutube = (t: Track) => t.source === 'youtube' || t.source === 'ytmusic' || /youtu\.?be/.test(t.url);
+const isYoutube = (t: Found) => t.source === 'youtube' || t.source === 'ytmusic' || /youtu\.?be/.test(t.url);
 
 /**
  * YouTube refuses Lavalink's own YouTube clients for most videos without a signed-in
@@ -36,24 +37,40 @@ const isYoutube = (t: Track) => t.source === 'youtube' || t.source === 'ytmusic'
  * through yt-dlp first and Lavalink's plugin is only the fallback. Other sources are
  * read by Lavalink directly.
  */
-export function routesFor(track: Track): Route[] {
+export function routesFor(track: Found): Route[] {
   if (DOWNLOAD_FIRST.includes(track.source)) return ['download'];
   const canDownload = !track.live && (track.duration ?? 0) <= MAX_DOWNLOAD_SECONDS;
   const routes: Route[] = isYoutube(track) ? ['direct', 'lavalink'] : ['lavalink', 'direct'];
   return canDownload ? [...routes, 'download'] : routes;
 }
 
-export async function loadVia(route: Route, track: Track): Promise<{ encoded: string; file?: string }> {
+export async function loadVia(route: Route, track: Found): Promise<{ encoded: string; file?: string }> {
   if (route === 'download') {
     const file = await downloadAudio(track.url);
+    if (!isCachedAudio(file)) throw new Error('unexpected file');
     const r = await loadEncoded(file);
     if (!r.encoded) throw new Error(r.error ?? 'unreadable file');
     return { encoded: r.encoded, file };
   }
   const address = route === 'direct' ? await directAudioUrl(track.url) : track.url;
+  await assertPublicUrl(address);
   const r = await loadEncoded(address);
-  if (!r.encoded) throw new Error(r.error ?? 'nothing loaded');
+  if (!r.encoded) {
+    if (route === 'direct') forgetDirect(track.url);
+    throw new Error(r.error ?? 'nothing loaded');
+  }
   return { encoded: r.encoded };
+}
+
+/**
+ * Gets a track ready ahead of time: matched on YouTube Music if it came from a
+ * playlist, and its YouTube stream address looked up. Starting it is then instant.
+ */
+export function warm(track: Found) {
+  void (async () => {
+    await ensurePlayable(track);
+    if (routesFor(track)[0] === 'direct') await directAudioUrl(track.url);
+  })().catch(() => {});
 }
 
 // ---------- Player ----------
@@ -61,11 +78,13 @@ export async function loadVia(route: Route, track: Track): Promise<{ encoded: st
 /** Everything Ditto plays in one server. */
 export class GuildMusic {
   readonly queue: Track[] = [];
+  /** Tracks already played, most recent last. */
+  readonly history: Track[] = [];
   current: Track | null = null;
   loop: LoopMode = 'off';
   filter: FilterName = 'none';
   volume = 60;
-  /** Where the "now playing" message goes. */
+  /** Where the player message goes. */
   textChannelId: string | null = null;
   nowPlaying: Message | null = null;
   readonly skipVotes = new Set<string>();
@@ -104,6 +123,10 @@ export class GuildMusic {
     return this.player?.paused ?? false;
   }
 
+  get isDestroyed() {
+    return this.destroyed;
+  }
+
   /** Seconds played in the current track. */
   get position() {
     return this.current ? Math.floor((this.player?.position ?? 0) / 1000) : 0;
@@ -128,17 +151,18 @@ export class GuildMusic {
     }
   }
 
-  /** Adds tracks; starts playing if nothing is. Returns the queue position of the first one (0 = playing now). */
-  async enqueue(tracks: Track[]) {
+  /** Adds tracks (at the front with `next`); starts playing if nothing is. Returns the queue position of the first one (0 = playing now). */
+  async enqueue(tracks: Track[], next = false) {
     this.clearIdle();
     const wasPlaying = !!this.current;
-    this.queue.push(...tracks);
+    if (next) this.queue.unshift(...tracks);
+    else this.queue.push(...tracks);
     if (!wasPlaying) {
       await this.advance();
       return 0;
     }
     this.queueChanged();
-    return this.queue.length - tracks.length + 1;
+    return next ? 1 : this.queue.length - tracks.length + 1;
   }
 
   /** Lavalink reports the end of a track (finished, stopped, or failed to load). */
@@ -153,6 +177,7 @@ export class GuildMusic {
     const track = this.current;
     const failed = this.routes[this.routeIndex];
     log.warn('music', `${this.guild.name}: ${track.title} failed via ${failed}: ${message}`);
+    if (failed === 'direct') forgetDirect(track.url);
     this.currentEncoded = null; // the end event of the broken track must not advance the queue
     this.routeIndex++;
     void this.start(track, new Error(message));
@@ -165,6 +190,10 @@ export class GuildMusic {
     if (!replaying) {
       this.dropTempFile();
       this.lastEncoded = null;
+      if (previous) {
+        this.history.push(previous);
+        if (this.history.length > HISTORY) this.history.shift();
+      }
     }
     this.currentEncoded = null;
     this.skipVotes.clear();
@@ -225,8 +254,9 @@ export class GuildMusic {
     }
   }
 
-  /** Loads the next track in the background (downloads excepted: those stay on demand). */
+  /** Loads the next track in the background, and looks up the one after (downloads stay on demand). */
   private prepareNext() {
+    if (this.queue[1]) warm(this.queue[1]);
     const next = this.loop === 'track' ? null : this.queue[0];
     if (!next || this.prepared?.track === next) return;
     void (async () => {
@@ -260,11 +290,7 @@ export class GuildMusic {
   }
 
   private giveUp(track: Track, error: Error) {
-    this.hooks.onError(
-      this,
-      track,
-      error instanceof UserError ? error : new UserError('This track could not be played.', 'Ce titre n’a pas pu être lu.')
-    );
+    this.hooks.onError(this, track, error instanceof UserError ? error : new UserError('This track could not be played.'));
     // Never loop back to a track that cannot be played.
     this.current = null;
     void this.advance();
@@ -277,9 +303,32 @@ export class GuildMusic {
 
   skip() {
     // The end event calls advance(); a looped track would otherwise start again.
-    if (this.loop === 'track') this.current = null;
+    if (this.loop === 'track' && this.current) {
+      this.history.push(this.current);
+      this.current = null;
+    }
     if (this.currentEncoded) void this.player?.stopPlaying(false, false).catch(() => {});
     else void this.advance(); // still loading: move on directly
+  }
+
+  /** Back to the start of the track, or — in its first seconds — to the previous one. */
+  async previous(): Promise<'previous' | 'restart'> {
+    const last = this.history.at(-1);
+    if (!this.current || !last || this.position > 5) {
+      if (this.current && !this.current.live) await this.seek(0);
+      return 'restart';
+    }
+    this.history.pop();
+    this.queue.unshift(this.current);
+    this.current = null; // advance() must not push it to the history again
+    this.queue.unshift(last);
+    this.prepared = null;
+    if (this.currentEncoded) {
+      this.currentEncoded = null;
+      await this.player?.stopPlaying(false, false).catch(() => {});
+    }
+    await this.advance();
+    return 'previous';
   }
 
   pause() {
@@ -291,8 +340,8 @@ export class GuildMusic {
   }
 
   setVolume(level: number) {
-    this.volume = level;
-    void this.player?.setVolume(level).catch(() => {});
+    this.volume = Math.max(0, Math.min(100, Math.round(level)));
+    void this.player?.setVolume(this.volume).catch(() => {});
   }
 
   async seek(seconds: number) {

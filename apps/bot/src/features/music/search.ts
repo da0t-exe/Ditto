@@ -1,3 +1,5 @@
+import dns from 'node:dns/promises';
+import net from 'node:net';
 import { runYtDlp } from './tools.js';
 
 export type Source =
@@ -30,14 +32,8 @@ export interface Found {
   live?: boolean;
 }
 
-export class UserError extends Error {
-  constructor(
-    public en: string,
-    public fr: string
-  ) {
-    super(en);
-  }
-}
+/** An error whose message can be shown as is. */
+export class UserError extends Error {}
 
 // ---------- Sources ----------
 
@@ -149,14 +145,6 @@ export async function searchMusic(query: string, limit = 6, timeoutMs = 4000): P
   return out.slice(0, limit);
 }
 
-// Autocomplete picks come back as « ytm:<id> »; keep what we already know about them.
-const picked = new Map<string, { found: Found; at: number }>();
-export function rememberPick(found: Found) {
-  const id = new URL(found.url).searchParams.get('v');
-  if (id) picked.set(id, { found, at: Date.now() });
-  for (const [k, v] of picked) if (Date.now() - v.at > 10 * 60_000) picked.delete(k);
-}
-
 // ---------- yt-dlp metadata ----------
 
 function fromInfo(info: any, fallbackUrl: string): Found {
@@ -181,7 +169,9 @@ async function ytdlpResolve(url: string): Promise<{ tracks: Found[]; playlist?: 
       .map((e: any) => {
         const entryUrl = e.url?.startsWith('http') ? e.url : e.ie_key === 'Youtube' || /^[\w-]{11}$/.test(e.id) ? `https://www.youtube.com/watch?v=${e.id}` : e.url;
         return { ...fromInfo(e, entryUrl), url: entryUrl, link: entryUrl, source: sourceOf(entryUrl) };
-      });
+      })
+      // Entries are read from the page: only web addresses are kept.
+      .filter((t: Found) => /^https?:\/\//i.test(t.url));
     return { tracks, playlist: info.title ?? undefined };
   }
   return { tracks: [fromInfo(info, url)] };
@@ -195,15 +185,74 @@ async function youtubeSearch(query: string): Promise<Found | null> {
   return { ...fromInfo(e, url), url, link: url, source: 'youtube' };
 }
 
+// ---------- Picking the best result ----------
+
+const normalise = (t: string) =>
+  t
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+
+/** Versions people rarely mean unless they ask for them. */
+const VARIANTS = ['remix', 'live', 'cover', 'karaoke', 'instrumental', 'sped', 'slowed', 'reverb', 'nightcore', '8d', 'acoustic', 'mix', 'edit', 'version', 'lofi'];
+
+/**
+ * How well a result answers the search: the share of searched words found in its
+ * title and artist, minus variants nobody asked for, with a small bonus for
+ * YouTube Music's own ranking.
+ */
+export function matchScore(query: string, hit: Pick<Found, 'title' | 'author'>, rank: number) {
+  const wanted = normalise(query).split(' ').filter(Boolean);
+  const words = new Set(normalise(`${hit.title} ${hit.author}`).split(' '));
+  const title = new Set(normalise(hit.title).split(' '));
+  let score = wanted.length ? wanted.filter((w) => words.has(w)).length / wanted.length : 0;
+  for (const v of VARIANTS) if (title.has(v) && !wanted.includes(v)) score -= 0.3;
+  return score - rank * 0.04;
+}
+
 /** Best match for free text: YouTube Music songs first, plain YouTube as a fallback. */
 export async function findOne(query: string): Promise<Found | null> {
   try {
-    const [hit] = await searchMusic(query, 1);
-    if (hit) return hit;
+    const hits = await searchMusic(query, 8);
+    if (hits.length) {
+      return hits.map((h, k) => ({ h, score: matchScore(query, h, k) })).sort((a, b) => b.score - a.score)[0].h;
+    }
   } catch {
     /* fall back below */
   }
   return youtubeSearch(query).catch(() => null);
+}
+
+// ---------- Links to private addresses ----------
+
+function isPrivateAddress(ip: string) {
+  if (net.isIPv4(ip)) {
+    const [a, b] = ip.split('.').map(Number);
+    return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
+  }
+  const v6 = ip.toLowerCase();
+  if (v6.startsWith('::ffff:')) return isPrivateAddress(v6.slice(7));
+  return v6 === '::1' || v6 === '::' || v6.startsWith('fc') || v6.startsWith('fd') || v6.startsWith('fe80');
+}
+
+/**
+ * Links people paste are fetched by yt-dlp and Lavalink on the host: only public web
+ * addresses are allowed, never the host itself or its local network.
+ */
+export async function assertPublicUrl(url: string) {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    throw new UserError('That link could not be played.');
+  }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new UserError('Only web links can be played.');
+  const host = u.hostname.replace(/^\[|\]$/g, '');
+  const addresses = net.isIP(host) ? [host] : (await dns.lookup(host, { all: true }).catch(() => [])).map((a) => a.address);
+  if (!addresses.length) throw new UserError('That link could not be played.');
+  if (addresses.some(isPrivateAddress)) throw new UserError('That link points to a private address.');
 }
 
 // ---------- Streaming services ----------
@@ -213,7 +262,7 @@ export async function findOne(query: string): Promise<Found | null> {
 const BROWSER = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36',
 };
-const NOT_FOUND = new UserError('I could not find that track on YouTube.', 'Je n’ai pas trouvé ce titre sur YouTube.');
+const NOT_FOUND = new UserError('I could not find that track on YouTube.');
 
 /** A single track known by name: matched on YouTube Music now, shown with the service's own metadata. */
 async function matchNow(meta: Omit<Found, 'url'>): Promise<Found> {
@@ -227,12 +276,12 @@ const lazy = (meta: Omit<Found, 'url' | 'query'>): Found => ({ ...meta, url: '',
 /** Spotify's public embed page carries the track, or the album / playlist with its track list. */
 async function spotify(url: string): Promise<{ tracks: Found[]; playlist?: string }> {
   const m = /spotify\.com\/(?:intl-[a-z]+\/)?(track|album|playlist)\/([A-Za-z0-9]+)/.exec(url);
-  if (!m) throw new UserError('That Spotify link could not be read.', 'Ce lien Spotify n’a pas pu être lu.');
+  if (!m) throw new UserError('That Spotify link could not be read.');
   const [, kind, id] = m;
   const html = await (await fetch(`https://open.spotify.com/embed/${kind}/${id}`, { headers: BROWSER, signal: AbortSignal.timeout(8000) })).text();
   const data = /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/.exec(html);
   const entity: any = data ? JSON.parse(data[1])?.props?.pageProps?.state?.data?.entity : null;
-  if (!entity) throw new UserError('That Spotify link could not be read.', 'Ce lien Spotify n’a pas pu être lu.');
+  if (!entity) throw new UserError('That Spotify link could not be read.');
   const cover = entity.visualIdentity?.image?.at?.(-1)?.url ?? null;
 
   if (kind === 'track') {
@@ -259,7 +308,7 @@ async function spotify(url: string): Promise<{ tracks: Found[]; playlist?: strin
       link: `https://open.spotify.com/track/${String(t.uri ?? '').split(':').pop()}`,
     })
   );
-  if (!tracks.length) throw new UserError('That Spotify playlist is empty or private.', 'Cette playlist Spotify est vide ou privée.');
+  if (!tracks.length) throw new UserError('That Spotify playlist is empty or private.');
   return { tracks, playlist: entity.name ?? entity.title };
 }
 
@@ -288,19 +337,16 @@ async function apple(url: string): Promise<{ tracks: Found[]; playlist?: string 
   if (albumId) {
     const results = await lookup(`id=${albumId}&entity=song&limit=200`);
     const songs = results.filter((r: any) => r.wrapperType === 'track');
-    if (!songs.length) throw new UserError('That Apple Music album could not be read.', 'Cet album Apple Music n’a pas pu être lu.');
+    if (!songs.length) throw new UserError('That Apple Music album could not be read.');
     return { tracks: songs.map((r: any) => lazy(meta(r))), playlist: results[0]?.collectionName };
   }
-  throw new UserError(
-    'Apple Music playlists are not supported — paste a song or an album.',
-    'Les playlists Apple Music ne sont pas prises en charge : colle un titre ou un album.'
-  );
+  throw new UserError('Apple Music playlists are not supported — paste a song or an album.');
 }
 
 /** Tidal tracks: the page title names the song and the artist. */
 async function tidal(url: string): Promise<{ tracks: Found[] }> {
   if (!/\/track\/\d+/.test(url)) {
-    throw new UserError('Only Tidal tracks are supported — not albums or playlists.', 'Seuls les titres Tidal sont pris en charge, pas les albums ni les playlists.');
+    throw new UserError('Only Tidal tracks are supported — not albums or playlists.');
   }
   const html = await (await fetch(url, { headers: BROWSER, signal: AbortSignal.timeout(8000) })).text();
   const og = (p: string) => new RegExp(`<meta[^>]+property="og:${p}"[^>]+content="([^"]*)"`).exec(html)?.[1];
@@ -315,7 +361,7 @@ async function tidal(url: string): Promise<{ tracks: Found[] }> {
 async function deezerCollection(kind: string, id: string): Promise<{ tracks: Found[]; playlist: string }> {
   const res = await fetch(`https://api.deezer.com/${kind}/${id}`, { signal: AbortSignal.timeout(8000) });
   const data: any = await res.json();
-  if (!res.ok || data.error) throw new UserError('That Deezer link could not be read.', 'Ce lien Deezer n’a pas pu être lu.');
+  if (!res.ok || data.error) throw new UserError('That Deezer link could not be read.');
   const cover = data.cover_xl ?? data.picture_xl ?? null;
   const tracks: Found[] = (data.tracks?.data ?? []).map((t: any) => ({
     url: '',
@@ -345,18 +391,12 @@ async function unshorten(url: string) {
 export async function resolveInput(input: string): Promise<{ tracks: Found[]; playlist?: string }> {
   const text = input.trim();
 
-  const pick = /^ytm:([\w-]{11})$/.exec(text);
-  if (pick) {
-    const known = picked.get(pick[1]);
-    if (known) return { tracks: [known.found] };
-    return ytdlpResolve(`https://music.youtube.com/watch?v=${pick[1]}`);
-  }
-
   if (!/^https?:\/\//i.test(text)) {
     const found = await findOne(text);
-    if (!found) throw new UserError('Nothing found for that search.', 'Rien trouvé pour cette recherche.');
+    if (!found) throw new UserError('Nothing found for that search.');
     return { tracks: [found] };
   }
+  await assertPublicUrl(text);
 
   let url = text;
   let source = sourceOf(url);
@@ -367,7 +407,7 @@ export async function resolveInput(input: string): Promise<{ tracks: Found[]; pl
 
   if (source === 'deezer') {
     const m = /deezer\.com\/(?:[a-z]{2}\/)?(track|album|playlist)\/(\d+)/.exec(url);
-    if (!m) throw new UserError('That Deezer link could not be read.', 'Ce lien Deezer n’a pas pu être lu.');
+    if (!m) throw new UserError('That Deezer link could not be read.');
     if (m[1] !== 'track') return deezerCollection(m[1], m[2]);
     const t: any = await (await fetch(`https://api.deezer.com/track/${m[2]}`, { signal: AbortSignal.timeout(8000) })).json();
     if (t.error) throw NOT_FOUND;
@@ -394,7 +434,7 @@ export async function resolveInput(input: string): Promise<{ tracks: Found[]; pl
     return result;
   } catch (err) {
     if (err instanceof UserError) throw err;
-    throw new UserError('That link could not be played.', 'Ce lien ne peut pas être lu.');
+    throw new UserError('That link could not be played.');
   }
 }
 
@@ -402,7 +442,7 @@ export async function resolveInput(input: string): Promise<{ tracks: Found[]; pl
 export async function ensurePlayable(track: Found): Promise<Found> {
   if (track.url) return track;
   const found = track.query ? await findOne(track.query) : null;
-  if (!found) throw new UserError('No YouTube match for this track.', 'Aucune correspondance YouTube pour ce titre.');
+  if (!found) throw new UserError('No YouTube match for this track.');
   track.url = found.url;
   track.duration ??= found.duration;
   return track;

@@ -8,7 +8,7 @@
  *
  * Set LAVALINK_HOST (and LAVALINK_PORT, LAVALINK_PASSWORD) to use an external node instead.
  */
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -16,6 +16,7 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { env } from '../../env.js';
 import { log } from '../../core/log.js';
+import { run } from './tools.js';
 
 export interface NodeConfig {
   host: string;
@@ -83,11 +84,14 @@ async function download(url: string, dest: string) {
 
 // ---------- Java ----------
 
-function javaVersion(bin: string) {
-  const out = spawnSync(bin, ['-version'], { encoding: 'utf8', timeout: 20_000 });
-  const text = `${out.stderr ?? ''}${out.stdout ?? ''}`;
-  const m = /version "(\d+)/.exec(text);
-  return out.status === 0 && m ? Number(m[1]) : 0;
+async function javaVersion(bin: string) {
+  try {
+    const r = await run(bin, ['-version'], 30_000);
+    const m = /version "(\d+)/.exec(`${r.err}${r.out}`);
+    return r.code === 0 && m ? Number(m[1]) : 0;
+  } catch {
+    return 0; // not installed
+  }
 }
 
 function findJava(dir: string): string | null {
@@ -111,9 +115,9 @@ const isMusl = () => {
 
 /** Java 17+ from the system, or a Temurin 21 JRE fetched from Adoptium. */
 async function ensureJava() {
-  if (javaVersion('java') >= 17) return 'java';
+  if ((await javaVersion('java')) >= 17) return 'java';
   const local = findJava(JRE_DIR);
-  if (local && javaVersion(local) >= 17) return local;
+  if (local && (await javaVersion(local)) >= 17) return local;
 
   const os = process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'mac' : isMusl() ? 'alpine-linux' : 'linux';
   const arch = process.arch === 'arm64' ? 'aarch64' : 'x64';
@@ -122,9 +126,9 @@ async function ensureJava() {
   fs.mkdirSync(JRE_DIR, { recursive: true });
   const archive = path.join(JRE_DIR, os === 'windows' ? 'jre.zip' : 'jre.tar.gz');
   await download(`https://api.adoptium.net/v3/binary/latest/21/ga/${os}/${arch}/jre/hotspot/normal/eclipse`, archive);
-  const untar = spawnSync('tar', [os === 'windows' ? '-xf' : '-xzf', archive, '-C', JRE_DIR], { encoding: 'utf8' });
+  const untar = await run('tar', [os === 'windows' ? '-xf' : '-xzf', archive, '-C', JRE_DIR], 300_000);
   fs.rmSync(archive, { force: true });
-  if (untar.status !== 0) throw new Error(`could not unpack Java: ${untar.stderr}`);
+  if (untar.code !== 0) throw new Error(`could not unpack Java: ${untar.err}`);
   const java = findJava(JRE_DIR);
   if (!java) throw new Error('Java was downloaded but not found');
   return java;
@@ -186,13 +190,15 @@ ${plugin}  server:
       nico: false
       http: true
       local: true
+    # A larger frame buffer rides out network hiccups instead of stuttering;
+    # medium resampling quality keeps the CPU free on small hosts.
     bufferDurationMs: 400
-    frameBufferDurationMs: 5000
+    frameBufferDurationMs: 10000
     opusEncodingQuality: 10
-    resamplingQuality: HIGH
+    resamplingQuality: MEDIUM
     trackStuckThresholdMs: 10000
     useSeekGhosting: true
-    playerUpdateInterval: 2
+    playerUpdateInterval: 1
     youtubeSearchEnabled: false
     soundcloudSearchEnabled: false
 plugins:
@@ -218,6 +224,8 @@ let active: NodeConfig | null = null;
 export const activeNode = () => active;
 let stopping = false;
 let restartPending = false;
+/** Crashes in a row: each one waits longer before the next start. */
+let crashes = 0;
 
 async function waitReady(node: NodeConfig, timeoutMs = 90_000) {
   const until = Date.now() + timeoutMs;
@@ -247,7 +255,11 @@ function lavalinkEnv() {
 
 function launch(java: string) {
   stopping = false;
-  child = spawn(java, [`-Xmx${MEMORY}`, '-jar', JAR, `--server.port=${PORT}`, '--server.address=127.0.0.1'], {
+  const startedAt = Date.now();
+  // G1 keeps garbage-collection pauses short: long pauses are what make audio stutter.
+  // (On small containers Java would otherwise pick its serial collector.)
+  const jvm = [`-Xmx${MEMORY}`, '-XX:+UseG1GC', '-XX:MaxGCPauseMillis=40', '-XX:+UseStringDeduplication'];
+  child = spawn(java, [...jvm, '-jar', JAR, `--server.port=${PORT}`, '--server.address=127.0.0.1'], {
     cwd: DIR,
     env: lavalinkEnv(),
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -263,8 +275,10 @@ function launch(java: string) {
   child.on('exit', (code) => {
     child = null;
     if (stopping) return;
-    log.warn('music', `Lavalink stopped (code ${code}), restarting in 5 s`);
-    setTimeout(() => launch(java), 5000);
+    crashes = Date.now() - startedAt > 5 * 60_000 ? 1 : crashes + 1;
+    const wait = Math.min(5000 * 2 ** (crashes - 1), 5 * 60_000);
+    log.warn('music', `Lavalink stopped (code ${code}), restarting in ${Math.round(wait / 1000)} s`);
+    setTimeout(() => launch(java), wait);
   });
 }
 

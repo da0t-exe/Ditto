@@ -1,6 +1,5 @@
 import type { Guild } from 'discord.js';
 import { getConfig } from './config.js';
-import { tr, guildLang } from './i18n.js';
 import { log } from './log.js';
 
 // Lines are batched for a few seconds instead of one message per event.
@@ -8,12 +7,25 @@ const queues = new Map<string, string[]>();
 const timers = new Map<string, NodeJS.Timeout>();
 const FLUSH_MS = 4000;
 
-/** Writes a line to the server's log channel, in the server's language. */
-export function logTo(guild: Guild, en: string, fr: string) {
+/** The last lines of every server, for the dashboard. */
+const recent = new Map<string, { at: number; text: string }[]>();
+const KEEP = 200;
+
+export function recentLogs(guildId: string) {
+  return recent.get(guildId) ?? [];
+}
+
+/** Writes a line to the server's log channel (and the dashboard). */
+export function logTo(guild: Guild, text: string) {
+  const lines = recent.get(guild.id) ?? [];
+  lines.push({ at: Date.now(), text });
+  if (lines.length > KEEP) lines.splice(0, lines.length - KEEP);
+  recent.set(guild.id, lines);
+
   if (!getConfig(guild.id).logChannel) return;
   const time = `<t:${Math.floor(Date.now() / 1000)}:T>`;
   const q = queues.get(guild.id) ?? [];
-  q.push(`${time} ${tr(guildLang(guild), en, fr)}`);
+  q.push(`${time} ${text}`);
   queues.set(guild.id, q);
   if (!timers.has(guild.id)) timers.set(guild.id, setTimeout(() => flush(guild), FLUSH_MS));
 }
