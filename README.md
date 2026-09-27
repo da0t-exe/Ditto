@@ -6,7 +6,7 @@
 
 Voice tools, music, a reCAPTCHA-style captcha and a web dashboard for Discord.
 
-<a href="https://github.com/da0t-exe/Ditto/releases"><img src="./assets/badges/version.svg" alt="version 1.1.0" /></a>
+<a href="https://github.com/da0t-exe/Ditto/releases"><img src="./assets/badges/version.svg" alt="version 0.6.0" /></a>
 <img src="./assets/badges/node.svg" alt="node 20+" />
 <img src="./assets/badges/discordjs.svg" alt="discord.js 14" />
 <a href="LICENSE"><img src="./assets/badges/license.svg" alt="license MIT" /></a>

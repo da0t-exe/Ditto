@@ -16,7 +16,7 @@ theme's colours, dark or light.
 
 **No password to type.** Anyone who can use the server's console is logged in to
 Ditto by the panel. The panel types a one-time code in the console, Ditto trades it
-for a session, and the panel keeps that session to itself. It needs Ditto 1.1 or
+for a session, and the panel keeps that session to itself. It needs Ditto 0.6 or
 later; with an older Ditto, the pages ask for the admin password from the console.
 
 It works on HTTPS panels too: the browser only talks to the panel, and the panel
@@ -52,7 +52,7 @@ script twice never adds anything twice.
 
 ## Use
 
-1. Start Ditto (1.1 or later) in a server of this panel. Its dashboard listens on
+1. Start Ditto (0.6 or later) in a server of this panel. Its dashboard listens on
    the server's **primary allocation** (`SERVER_PORT`), which is where the panel
    looks for it: do not set `DASHBOARD=0` or a different `DASHBOARD_PORT`.
 2. Open the server: the **Ditto** group is in the sidebar.
@@ -108,7 +108,7 @@ the port is open to players.
 |---|---|
 | « Ditto is not answering » | Ditto is not running, or not on the primary allocation, or the panel cannot reach that port. The page tries again every 10 seconds. |
 | « This server does not answer like Ditto » | Something else listens on that port. |
-| The pages ask for a password | Ditto is older than 1.1, `DASHBOARD_CONSOLE_LOGIN=0` is set, or the server's console did not take the code (the server must be running). |
+| The pages ask for a password | Ditto is older than 0.6, `DASHBOARD_CONSOLE_LOGIN=0` is set, or the server's console did not take the code (the server must be running). |
 | No **Ditto** group in the sidebar | Wrong egg (see the theme editor), or a Luna update: run the script again. |
 | A blank page after an update | Luna rebuilt the front end without the addon: run the script again. |
 

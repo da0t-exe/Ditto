@@ -110,7 +110,7 @@ if [[ "$MODE" == add ]]; then
 
 Ditto is in the panel. Open a server that runs Ditto: the « Ditto » group is in the
 sidebar, under Overview. People with console access are logged in to Ditto by the
-panel (Ditto 1.1 or later; older versions ask for the password from the console).
+panel (Ditto 0.6 or later; older versions ask for the password from the console).
 
 Rename, move, hide or limit the pages to some eggs in Admin → Theme editor →
 Navigation. Run this script again after each Luna update.

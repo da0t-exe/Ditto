@@ -68,6 +68,6 @@ db.exec(`
   );
 `);
 
-// Added in 1.1: the name shown in the logs for logins made from the Pterodactyl panel.
+// Added in 0.6: the name shown in the logs for logins made from the Pterodactyl panel.
 const sessionColumns = db.prepare<[], { name: string }>('PRAGMA table_info(dashboard_sessions)').all();
 if (!sessionColumns.some((c) => c.name === 'label')) db.exec('ALTER TABLE dashboard_sessions ADD COLUMN label TEXT');

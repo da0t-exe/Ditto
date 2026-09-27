@@ -55,7 +55,7 @@ const Login = ({ store }: { store: DittoStore }) => {
                 <Muted>
                     {useCode
                         ? 'Type /dashboard in Discord and paste the code from the link Ditto sends you.'
-                        : 'The panel could not log you in by itself (it needs Ditto 1.1 or later). Use the admin password Ditto prints in the console when it starts.'}
+                        : 'The panel could not log you in by itself (it needs Ditto 0.6 or later). Use the admin password Ditto prints in the console when it starts.'}
                 </Muted>
             </p>
             <form onSubmit={submit}>

@@ -92,7 +92,7 @@ export interface DittoMe {
         memoryMb: number;
         music: boolean;
         photos: number;
-        /** Adds the bot to a Discord server (Ditto 1.1 and later). */
+        /** Adds the bot to a Discord server (Ditto 0.6 and later). */
         invite?: string | null;
     };
     guilds: DittoGuildSummary[];

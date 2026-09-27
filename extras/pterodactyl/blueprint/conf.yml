@@ -3,7 +3,7 @@ info:
   identifier: "ditto"
   description: "Adds a Ditto tab to each server page, showing the Ditto Discord bot's web dashboard."
   flags: ""
-  version: "1.0.0"
+  version: "0.6.0"
   target: "beta-2025-09"
   author: "da0t-exe"
   icon: "icon.png"

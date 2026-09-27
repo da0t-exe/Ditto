@@ -3,12 +3,11 @@
 Each section is also published as a [GitHub release](https://github.com/da0t-exe/Ditto/releases).
 Versions up to 0.5.2 are described on the releases page only.
 
-## 1.1.0 — 2026-09-27
+## 0.6.0 — 2026-09-27
 
 The biggest release so far: a captcha that looks exactly like reCAPTCHA, faster
 music with a new player, a web dashboard, and Ditto's own pages inside the
-Pterodactyl panel. It includes 1.0.0, which was not published separately. Ditto
-now speaks English only.
+Pterodactyl panel. Ditto now speaks English only.
 
 ### Captcha
 
