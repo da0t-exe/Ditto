@@ -44,6 +44,14 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS captcha_log_guild_at ON captcha_log (guild_id, at);
 
+  -- Dashboard logins: only a hash of each token is kept.
+  CREATE TABLE IF NOT EXISTS dashboard_sessions (
+    token_hash TEXT PRIMARY KEY,
+    guild_id   TEXT,
+    user_id    TEXT,
+    expires_at INTEGER NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS voice_locks (
     channel_id TEXT PRIMARY KEY,
     guild_id   TEXT NOT NULL,
