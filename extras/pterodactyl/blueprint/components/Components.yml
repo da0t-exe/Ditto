@@ -1,0 +1,7 @@
+Navigation:
+  Routes:
+    - Name: "Ditto"
+      Path: "/ditto"
+      Type: "server"
+      Component: "DittoPage"
+      AdminOnly: "false"
