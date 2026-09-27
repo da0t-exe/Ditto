@@ -70,6 +70,9 @@ export function me(client: Client, s: Session) {
       memoryMb: Math.round(process.memoryUsage().rss / 1048576),
       music: music.ready,
       photos: getPool()?.images.length ?? 0,
+      invite: client.user
+        ? `https://discord.com/oauth2/authorize?client_id=${client.user.id}&scope=bot+applications.commands&permissions=1099800103952`
+        : null,
     },
     guilds: guildsFor(client, s).map((g) => ({
       id: g.id,

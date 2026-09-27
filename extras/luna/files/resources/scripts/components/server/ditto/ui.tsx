@@ -1,99 +1,113 @@
 import React from 'react';
-import styled, { css } from 'styled-components/macro';
+import styled from 'styled-components/macro';
 import tw from 'twin.macro';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { IconDefinition } from '@fortawesome/free-solid-svg-icons';
+import Label from '@/components/elements/Label';
 import Select from '@/components/elements/Select';
+import Switch from '@/components/elements/Switch';
 import { DittoGuild, DittoOption } from '@/api/server/ditto';
 
-/* Ditto addon: small building blocks drawn with Luna's own colour variables, so the
-   tab follows the panel's theme, dark or light. */
+/* Ditto addon: the pieces the Ditto pages are built from, drawn like Luna's own pages
+   (the server dashboard's cards, the settings forms) with the theme's colour variables. */
 
 export const Card = styled.div`
-    ${tw`p-4`};
     background-color: var(--color-background-secondary);
     border: 1px solid var(--color-neutral);
-    border-radius: var(--border-radius, 12px);
+    border-radius: var(--border-radius, 8px);
+    overflow: hidden;
 `;
 
-export const CardTitle = styled.h3`
-    ${tw`flex items-center gap-2 mb-3 text-sm font-medium uppercase tracking-wide`};
-    color: var(--color-base);
+export const CardBody = styled.div`
+    ${tw`p-4`};
 `;
+
+export const CardHeader = ({
+    icon,
+    title,
+    children,
+}: {
+    icon?: IconDefinition;
+    title: React.ReactNode;
+    children?: React.ReactNode;
+}) => (
+    <div css={tw`flex items-center gap-3 px-4 py-3`} style={{ borderBottom: '1px solid var(--color-neutral)' }}>
+        {icon && <FontAwesomeIcon icon={icon} fixedWidth style={{ color: 'var(--color-primary)' }} />}
+        <span css={tw`font-medium truncate`} style={{ color: 'var(--color-base)' }}>
+            {title}
+        </span>
+        {children && <div css={tw`flex items-center gap-2 ml-auto`}>{children}</div>}
+    </div>
+);
+
+/** A card with a title bar, like the boxes of Luna's server dashboard. */
+export const Box = ({
+    icon,
+    title,
+    actions,
+    className,
+    children,
+}: {
+    icon?: IconDefinition;
+    title: React.ReactNode;
+    actions?: React.ReactNode;
+    className?: string;
+    children: React.ReactNode;
+}) => (
+    <Card className={className}>
+        <CardHeader icon={icon} title={title}>
+            {actions}
+        </CardHeader>
+        <CardBody>{children}</CardBody>
+    </Card>
+);
 
 export const Muted = styled.span`
     color: var(--color-muted);
 `;
 
-export const Grid = styled.div<{ $min?: number }>`
-    ${tw`grid gap-4`};
-    grid-template-columns: repeat(auto-fit, minmax(${(p) => p.$min ?? 320}px, 1fr));
-`;
+/** A row of a list inside a card, separated like the rows of Luna's server information box. */
+export const Line = styled.div`
+    ${tw`flex items-center gap-3 py-3`};
+    border-bottom: 1px solid var(--color-neutral);
 
-export const Row = styled.div`
-    ${tw`flex flex-wrap items-center gap-2`};
-`;
-
-export const Pill = styled.span<{ $tone?: 'good' | 'bad' | 'neutral' }>`
-    ${tw`inline-flex items-center gap-2 px-3 py-1 text-xs font-medium rounded-full`};
-    background-color: var(--color-background);
-    border: 1px solid var(--color-neutral);
-    color: ${(p) => (p.$tone === 'good' ? '#22c55e' : p.$tone === 'bad' ? '#ef4444' : 'var(--color-muted)')};
-`;
-
-export const Tabs = styled.div`
-    ${tw`flex gap-1 p-1 mb-4 overflow-x-auto`};
-    background-color: var(--color-background-secondary);
-    border: 1px solid var(--color-neutral);
-    border-radius: var(--border-radius, 12px);
-`;
-
-export const Tab = styled.button<{ $active: boolean }>`
-    ${tw`flex items-center gap-2 px-4 py-2 text-sm font-medium whitespace-nowrap`};
-    border-radius: calc(var(--border-radius, 12px) * 0.67);
-    color: var(--color-muted);
-    transition: all 150ms ease-in-out;
-
-    &:hover {
-        color: var(--color-base);
+    &:first-child {
+        ${tw`pt-0`};
     }
 
-    ${(p) =>
-        p.$active &&
-        css`
-            background-color: var(--color-primary);
-            color: var(--color-base);
-        `};
+    &:last-child {
+        ${tw`pb-0`};
+        border-bottom: none;
+    }
 `;
 
-export const ListItem = styled.div`
-    ${tw`flex items-center gap-3 px-3 py-2`};
-    background-color: var(--color-background);
-    border-radius: calc(var(--border-radius, 12px) * 0.67);
-`;
+/** Shown in a card that has nothing to list yet. */
+export const Empty = ({ icon, children }: { icon: IconDefinition; children: React.ReactNode }) => (
+    <div
+        css={tw`flex flex-col items-center gap-3 px-4 py-8 text-center text-sm`}
+        style={{ color: 'var(--color-muted)' }}
+    >
+        <FontAwesomeIcon icon={icon} size={'2x'} style={{ opacity: 0.5 }} />
+        <div>{children}</div>
+    </div>
+);
 
-export const Kpi = ({ label, value, sub }: { label: string; value: React.ReactNode; sub?: React.ReactNode }) => (
-    <Card>
-        <div css={tw`text-xs font-medium uppercase tracking-wide`} style={{ color: 'var(--color-muted)' }}>
-            {label}
-        </div>
-        <div css={tw`mt-1 text-2xl font-bold truncate`} style={{ color: 'var(--color-base)' }}>
-            {value}
-        </div>
-        {sub && (
-            <div css={tw`text-xs truncate`} style={{ color: 'var(--color-muted)' }}>
-                {sub}
-            </div>
-        )}
-    </Card>
+export const Dot = ({ on }: { on: boolean }) => (
+    <span
+        css={tw`inline-block w-2 h-2 rounded-full flex-none`}
+        style={{
+            backgroundColor: on ? '#22c55e' : '#ef4444',
+            boxShadow: `0 0 0 3px ${on ? '#22c55e33' : '#ef444433'}`,
+        }}
+    />
 );
 
 export const Field = ({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) => (
-    <div css={tw`mb-4`}>
-        <label css={tw`block mb-1 text-sm font-medium`} style={{ color: 'var(--color-base)' }}>
-            {label}
-        </label>
+    <div css={tw`mb-5 last:mb-0`}>
+        <Label>{label}</Label>
         {children}
         {hint && (
-            <p css={tw`mt-1 text-xs`} style={{ color: 'var(--color-muted)' }}>
+            <p css={tw`mt-2 ml-1 text-xs`} style={{ color: 'var(--color-muted)' }}>
                 {hint}
             </p>
         )}
@@ -117,12 +131,7 @@ export const Picture = ({
 };
 
 export const Avatar = ({ url, name, size = 40 }: { url: string | null; name: string; size?: number }) => {
-    const style = {
-        width: size,
-        height: size,
-        borderRadius: 'calc(var(--border-radius, 12px) * 0.67)',
-        flex: 'none' as const,
-    };
+    const style = { width: size, height: size, borderRadius: '9999px', flex: 'none' as const };
     const initials = name
         .split(/\s+/)
         .map((w) => w[0])
@@ -135,12 +144,8 @@ export const Avatar = ({ url, name, size = 40 }: { url: string | null; name: str
             style={style}
             fallback={
                 <div
-                    css={tw`flex items-center justify-center text-sm font-bold`}
-                    style={{
-                        ...style,
-                        backgroundColor: 'var(--color-background)',
-                        color: 'var(--color-muted)',
-                    }}
+                    css={tw`flex items-center justify-center font-bold`}
+                    style={{ ...style, backgroundColor: 'var(--color-primary)', color: '#fff', fontSize: size * 0.4 }}
                 >
                     {initials}
                 </div>
@@ -149,9 +154,9 @@ export const Avatar = ({ url, name, size = 40 }: { url: string | null; name: str
     );
 };
 
-// ---------- Setting controls ----------
+// ---------- Setting controls: each change is saved at once ----------
 
-const label = (o: DittoOption) => (o.parent ? `${o.name} · ${o.parent}` : o.name);
+const optionLabel = (o: DittoOption) => (o.parent ? `${o.name} · ${o.parent}` : o.name);
 
 export const SingleSelect = ({
     options,
@@ -168,7 +173,7 @@ export const SingleSelect = ({
         <option value={''}>{none}</option>
         {options.map((o) => (
             <option key={o.id} value={o.id}>
-                {label(o)}
+                {optionLabel(o)}
             </option>
         ))}
     </Select>
@@ -195,14 +200,20 @@ export const NumberSelect = ({
 );
 
 const Chip = styled.span`
-    ${tw`inline-flex items-center gap-2 py-1 pl-3 pr-1 text-sm rounded-full`};
-    background-color: var(--color-background);
-    border: 1px solid var(--color-neutral);
+    ${tw`inline-flex items-center gap-1 py-1 pl-3 pr-1 text-sm`};
+    background-color: color-mix(in srgb, var(--color-primary) 18%, transparent);
+    border: 1px solid color-mix(in srgb, var(--color-primary) 45%, transparent);
+    border-radius: 9999px;
     color: var(--color-base);
 
     & > button {
-        ${tw`w-5 h-5 rounded-full text-xs`};
+        ${tw`flex items-center justify-center w-5 h-5 text-xs rounded-full`};
         color: var(--color-muted);
+
+        &:hover {
+            color: var(--color-base);
+            background-color: var(--color-neutral);
+        }
     }
 `;
 
@@ -226,7 +237,7 @@ export const MultiSelect = ({
                             {o.name}
                             <button
                                 type={'button'}
-                                title={'Remove'}
+                                title={`Remove ${o.name}`}
                                 onClick={() => onChange(values.filter((v) => v !== o.id))}
                             >
                                 ✕
@@ -236,10 +247,10 @@ export const MultiSelect = ({
                 </div>
             )}
             <Select value={''} onChange={(e) => e.currentTarget.value && onChange([...values, e.currentTarget.value])}>
-                <option value={''}>{rest.length ? '+ Add…' : 'Nothing else to add'}</option>
+                <option value={''}>{rest.length ? 'Add…' : 'Nothing else to add'}</option>
                 {rest.map((o) => (
                     <option key={o.id} value={o.id}>
-                        {label(o)}
+                        {optionLabel(o)}
                     </option>
                 ))}
             </Select>
@@ -247,24 +258,30 @@ export const MultiSelect = ({
     );
 };
 
+/** Luna's switch, kept in step with the value Ditto has saved. */
 export const Toggle = ({
-    label: text,
+    name,
+    label,
+    description,
     checked,
     onChange,
 }: {
+    name: string;
     label: string;
+    description?: string;
     checked: boolean;
     onChange: (on: boolean) => void;
 }) => (
-    <label css={tw`flex items-center gap-3 mb-3 cursor-pointer select-none`} style={{ color: 'var(--color-base)' }}>
-        <input
-            type={'checkbox'}
-            checked={checked}
+    <div css={tw`mb-5 last:mb-0`}>
+        <Switch
+            key={String(checked)}
+            name={name}
+            label={label}
+            description={description}
+            defaultChecked={checked}
             onChange={(e) => onChange(e.currentTarget.checked)}
-            css={tw`w-4 h-4`}
         />
-        {text}
-    </label>
+    </div>
 );
 
 // ---------- Formatting ----------
@@ -285,6 +302,14 @@ export function formatUptime(ms: number) {
     return h < 48 ? `${h} h` : `${Math.floor(h / 24)} days`;
 }
 
+export function timeAgo(at: number) {
+    const s = Math.max(0, Math.round((Date.now() - at) / 1000));
+    if (s < 60) return 'just now';
+    if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+    if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+    return new Date(at).toLocaleDateString();
+}
+
 /** Renders **bold**, `code`, channel, role and member mentions and <t:time> from Ditto's log lines. */
 export function DiscordText({ text, guild }: { text: string; guild: DittoGuild }) {
     const parts: React.ReactNode[] = [];
@@ -297,8 +322,8 @@ export function DiscordText({ text, guild }: { text: string; guild: DittoGuild }
             key={k++}
             css={tw`px-1 rounded`}
             style={{
-                backgroundColor: 'var(--color-background)',
-                color: 'var(--color-primary)',
+                backgroundColor: 'color-mix(in srgb, var(--color-primary) 18%, transparent)',
+                color: 'var(--color-base)',
             }}
         >
             {t}

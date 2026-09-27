@@ -6,7 +6,17 @@ import type { Client } from 'discord.js';
 import { log } from '../core/log.js';
 import { env, ROOT } from '../env.js';
 import { guildDetail, guildLive, guildOf, HttpError, me, musicAction, runAction, setConfig, unlock } from './api.js';
-import { adminPassword, allowAttempt, loginWithLink, loginWithPassword, logout, sessionOf, type Session } from './auth.js';
+import {
+  adminPassword,
+  allowAttempt,
+  listenToConsole,
+  loginWithConsoleCode,
+  loginWithLink,
+  loginWithPassword,
+  logout,
+  sessionOf,
+  type Session,
+} from './auth.js';
 
 /**
  * The web dashboard: a small HTTP server inside the bot, with a single page and a
@@ -60,6 +70,7 @@ async function readBody(req: http.IncomingMessage): Promise<Record<string, unkno
 const bearer = (req: http.IncomingMessage) => /^Bearer (.+)$/.exec(req.headers.authorization ?? '')?.[1] ?? null;
 
 function whoIs(client: Client, s: Session) {
+  if (s.label) return s.label;
   if (!s.userId) return 'Admin';
   return client.users.cache.get(s.userId)?.username ?? 'Staff';
 }
@@ -89,6 +100,13 @@ async function route(client: Client, req: http.IncomingMessage, res: http.Server
     const body = await readBody(req);
     const login = loginWithLink(String(body.code ?? ''));
     if (!login) throw new HttpError(401, 'This link has expired or was already used. Run /dashboard again.');
+    return send(res, 200, { token: login.token });
+  }
+  if (method === 'POST' && url.pathname === '/api/login/console') {
+    const body = await readBody(req);
+    const login = await loginWithConsoleCode(String(body.code ?? ''), String(body.name ?? ''));
+    if (!login) throw new HttpError(401, 'The console code did not arrive.');
+    log.info('dashboard', `${login.label} logged in`);
     return send(res, 200, { token: login.token });
   }
 
@@ -140,6 +158,7 @@ export function startDashboard(client: Client) {
     });
   });
   server.on('error', (err) => log.error('dashboard', `could not start on port ${env.dashboardPort}: ${err.message}`));
+  listenToConsole();
   server.listen(env.dashboardPort, env.dashboardHost, () => {
     const { password, generated } = adminPassword();
     const where = dashboardUrl() ?? `http://<this server's address>:${env.dashboardPort}`;

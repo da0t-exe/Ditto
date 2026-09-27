@@ -6,7 +6,10 @@ import { httpErrorToHuman } from '@/api/http';
  * (/api/client/servers/{uuid}/ditto/…), which forwards the request to the bot's
  * dashboard API on the server's main port.
  *
- * A separate client from the panel's own, so the page can refresh every few
+ * The panel logs people in to Ditto by itself. Only when it cannot (an older Ditto)
+ * do the pages ask for Ditto's password; that login is then kept in this browser.
+ *
+ * A separate client from the panel's own, so the pages can refresh every few
  * seconds without flashing the panel's progress bar.
  */
 const client = axios.create({
@@ -27,6 +30,7 @@ export class DittoError extends Error {
 
 const tokenKey = (uuid: string) => `ditto:token:${uuid}`;
 
+/** A login made with Ditto's password in this browser, if any. */
 export function dittoToken(uuid: string): string | null {
     try {
         return localStorage.getItem(tokenKey(uuid));
@@ -88,6 +92,8 @@ export interface DittoMe {
         memoryMb: number;
         music: boolean;
         photos: number;
+        /** Adds the bot to a Discord server (Ditto 1.1 and later). */
+        invite?: string | null;
     };
     guilds: DittoGuildSummary[];
 }

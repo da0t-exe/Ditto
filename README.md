@@ -6,7 +6,7 @@
 
 Voice tools, music, a reCAPTCHA-style captcha and a web dashboard for Discord.
 
-<a href="https://github.com/da0t-exe/Ditto/releases"><img src="./assets/badges/version.svg" alt="version 1.0.0" /></a>
+<a href="https://github.com/da0t-exe/Ditto/releases"><img src="./assets/badges/version.svg" alt="version 1.1.0" /></a>
 <img src="./assets/badges/node.svg" alt="node 20+" />
 <img src="./assets/badges/discordjs.svg" alt="discord.js 14" />
 <a href="LICENSE"><img src="./assets/badges/license.svg" alt="license MIT" /></a>
@@ -90,9 +90,11 @@ A web dashboard served by Ditto itself — no second program to run:
 - locked channels, with an unlock button, and the live activity log.
 
 Dark by default, with a light mode and an accent colour you pick to match your
-panel. On Pterodactyl it also fits in the panel as a **Ditto** tab: with the Luna
-theme, one script adds it natively ([extras/luna](extras/luna/README.md)); for a
-stock panel or Blueprint, see [extras/pterodactyl](extras/pterodactyl/README.md).
+panel. On Pterodactyl it also fits in the panel: with the Luna theme, one script
+adds a **Ditto** group to each server's sidebar (Overview, Captcha, Music, Voice,
+Bot settings, Logs), with no password to type
+([extras/luna](extras/luna/README.md)); for a stock panel or Blueprint, see
+[extras/pterodactyl](extras/pterodactyl/README.md).
 
 ## Commands
 
@@ -192,6 +194,7 @@ start, then set it back — `.env` and `data/` are never touched.
 | `DASHBOARD_PASSWORD` | The admin password (default: generated, printed at start) |
 | `DASHBOARD_URL` | Its public address, for the `/dashboard` links (e.g. `https://ditto.example.com`) |
 | `DASHBOARD_FRAME_ANCESTORS` | Sites allowed to show it in a frame, e.g. your panel's address |
+| `DASHBOARD_CONSOLE_LOGIN` | `0` stops the Luna panel pages from logging people in through the server's console |
 | `LAVALINK_HOST` · `LAVALINK_PORT` · `LAVALINK_PASSWORD` | Use an external Lavalink node instead of the built-in one |
 | `LAVALINK_MEMORY` | Memory for the built-in Lavalink (default `512M`) |
 
@@ -227,7 +230,7 @@ apps/bot/
     │   └── dashboard.ts /dashboard
     ├── dashboard/      Web server, login, JSON API, and the page (public/)
     └── scripts/        selftest, captcha:fetch, music-check, lavalink-check, music-lab
-extras/luna/            The native Ditto tab for the Luna theme (install.sh)
+extras/luna/            The Ditto pages for the Luna theme's sidebar (install.sh)
 extras/pterodactyl/     The Ditto tab for a stock Pterodactyl panel or Blueprint
 ```
 

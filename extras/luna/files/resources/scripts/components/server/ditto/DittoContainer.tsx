@@ -1,97 +1,61 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import tw from 'twin.macro';
+import { useLocation } from 'react-router';
+import { Redirect } from 'react-router-dom';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import {
-    faBolt,
-    faHeadphones,
-    faHome,
-    faRobot,
-    faScroll,
-    faShieldAlt,
-    faSignOutAlt,
-    faSlidersH,
-    faSync,
-    faVolumeUp,
-} from '@fortawesome/free-solid-svg-icons';
+import { faPlus, faRobot, faSignOutAlt, faSync } from '@fortawesome/free-solid-svg-icons';
 import { ServerContext } from '@/state/server';
 import ServerContentBlock from '@/components/elements/ServerContentBlock';
+import FlashMessageRender from '@/components/FlashMessageRender';
 import Spinner from '@/components/elements/Spinner';
-import Button from '@/components/elements/Button';
 import Input from '@/components/elements/Input';
 import Select from '@/components/elements/Select';
-import FlashMessageRender from '@/components/FlashMessageRender';
+import { Button } from '@/components/elements/button/index';
+import { Alert } from '@/components/elements/alert';
 import useFlash from '@/plugins/useFlash';
-import ditto, { DittoError, DittoGuild, DittoLive, DittoMe, setDittoToken } from '@/api/server/ditto';
-import { Avatar, Card, CardTitle, Muted, Pill, Row, Tab, Tabs, formatUptime } from './ui';
-import { CaptchaTab, LogsTab, MusicTab, OverviewTab, SettingsTab, VoiceTab } from './DittoTabs';
+import { DittoError } from '@/api/server/ditto';
+import { DittoStore, useDitto } from './store';
+import { Avatar, Box, Card, CardBody, Dot, Muted, formatUptime } from './ui';
+import { Captcha, Logs, Music, Overview, SectionProps, Settings, Voice } from './sections';
 
 /**
- * Ditto addon: the Ditto Discord bot's dashboard as a tab of the server, drawn with
- * the panel's own theme. The bot runs on this server; the panel forwards the page's
- * requests to it.
+ * Ditto addon: the pages of the Ditto section of a server, one per entry of the
+ * « Ditto » group in Luna's sidebar. The Ditto Discord bot runs on this server; the
+ * panel logs in to it and forwards the pages' requests.
  */
 
-type TabId = 'overview' | 'captcha' | 'music' | 'voice' | 'settings' | 'logs';
-const TABS: { id: TabId; label: string; icon: typeof faHome }[] = [
-    { id: 'overview', label: 'Overview', icon: faHome },
-    { id: 'captcha', label: 'Captcha', icon: faShieldAlt },
-    { id: 'music', label: 'Music', icon: faHeadphones },
-    { id: 'voice', label: 'Voice', icon: faVolumeUp },
-    { id: 'settings', label: 'Settings', icon: faSlidersH },
-    { id: 'logs', label: 'Logs', icon: faScroll },
-];
-
-export interface DittoActions {
-    save: (field: string, values: string[]) => Promise<void>;
-    run: (action: 'quick-setup' | 'detect' | 'panel') => Promise<void>;
-    music: (action: string, body?: Record<string, unknown>) => Promise<void>;
-    unlock: (channelId: string) => Promise<void>;
-}
-
-const remember = (key: string, value?: string) => {
-    try {
-        if (value === undefined) return localStorage.getItem(key);
-        localStorage.setItem(key, value);
-    } catch {
-        /* private mode */
-    }
-    return null;
+const SECTIONS: Record<string, { title: string; Page: (props: SectionProps) => JSX.Element }> = {
+    overview: { title: 'Overview', Page: Overview },
+    captcha: { title: 'Captcha', Page: Captcha },
+    music: { title: 'Music', Page: Music },
+    voice: { title: 'Voice', Page: Voice },
+    settings: { title: 'Bot settings', Page: Settings },
+    logs: { title: 'Logs', Page: Logs },
 };
 
-const Login = ({ uuid, onDone, notice }: { uuid: string; onDone: () => void; notice?: string }) => {
+const Login = ({ store }: { store: DittoStore }) => {
     const [useCode, setUseCode] = useState(false);
     const [value, setValue] = useState('');
-    const [error, setError] = useState(notice ?? '');
+    const [error, setError] = useState('');
     const [busy, setBusy] = useState(false);
 
     const submit = (e: React.FormEvent) => {
         e.preventDefault();
         setBusy(true);
         setError('');
-        ditto<{ token: string }>(
-            uuid,
-            'post',
-            useCode ? 'login/link' : 'login',
-            useCode ? { code: value.trim() } : { password: value }
-        )
-            .then(({ token }) => {
-                setDittoToken(uuid, token);
-                onDone();
-            })
+        store
+            .login(value, useCode)
             .catch((err: DittoError) => setError(err.message))
             .then(() => setBusy(false));
     };
 
     return (
-        <Card css={tw`max-w-md mx-auto mt-8`}>
-            <CardTitle>
-                <FontAwesomeIcon icon={faRobot} /> Log in to Ditto
-            </CardTitle>
-            <p css={tw`mb-4 text-sm`}>
+        <Box icon={faRobot} title={'Log in to Ditto'} css={tw`max-w-lg mx-auto mt-6`}>
+            <p css={tw`mb-4 text-sm leading-relaxed`}>
                 <Muted>
                     {useCode
-                        ? 'Type /dashboard in Discord and paste the code from its link.'
-                        : 'The admin password is printed in this server’s console when Ditto starts.'}
+                        ? 'Type /dashboard in Discord and paste the code from the link Ditto sends you.'
+                        : 'The panel could not log you in by itself (it needs Ditto 1.1 or later). Use the admin password Ditto prints in the console when it starts.'}
                 </Muted>
             </p>
             <form onSubmit={submit}>
@@ -104,7 +68,7 @@ const Login = ({ uuid, onDone, notice }: { uuid: string; onDone: () => void; not
                     required
                 />
                 {error && <p css={tw`mt-2 text-sm text-red-400`}>{error}</p>}
-                <Row css={tw`mt-4 justify-between`}>
+                <div css={tw`flex flex-wrap items-center justify-between gap-2 mt-4`}>
                     <button
                         type={'button'}
                         css={tw`text-sm`}
@@ -113,229 +77,167 @@ const Login = ({ uuid, onDone, notice }: { uuid: string; onDone: () => void; not
                     >
                         {useCode ? 'Use the admin password' : 'Use a code from /dashboard'}
                     </button>
-                    <Button type={'submit'} isLoading={busy}>
-                        Log in
+                    <Button type={'submit'} disabled={busy || !value}>
+                        {busy ? 'Logging in…' : 'Log in'}
                     </Button>
-                </Row>
+                </div>
             </form>
-        </Card>
+        </Box>
+    );
+};
+
+const Down = ({ store }: { store: DittoStore }) => (
+    <Card css={tw`max-w-xl mx-auto mt-6 text-center`}>
+        <CardBody css={tw`flex flex-col items-center gap-3 py-10`}>
+            <span
+                css={tw`flex items-center justify-center w-14 h-14 text-2xl rounded-full`}
+                style={{ backgroundColor: 'var(--color-neutral)', color: 'var(--color-muted)' }}
+            >
+                <FontAwesomeIcon icon={faRobot} />
+            </span>
+            <h2 css={tw`text-lg font-medium`} style={{ color: 'var(--color-base)' }}>
+                Ditto is not answering
+            </h2>
+            <p css={tw`text-sm`} style={{ color: 'var(--color-base)' }}>
+                {store.state.problem}
+            </p>
+            <p css={tw`max-w-md text-sm`}>
+                <Muted>
+                    Start the server and wait for « [dashboard] open … » in the console. This page tries again by
+                    itself.
+                </Muted>
+            </p>
+            <Button onClick={() => store.load()} css={tw`mt-2`}>
+                <FontAwesomeIcon icon={faSync} css={tw`mr-2`} />
+                Try again
+            </Button>
+        </CardBody>
+    </Card>
+);
+
+const Header = ({ store, title }: { store: DittoStore; title: string }) => {
+    const { me, guildId, manual } = store.state;
+    if (!me) return null;
+    const current = me.guilds.find((g) => g.id === guildId);
+    return (
+        <div css={tw`flex flex-wrap items-center gap-4 mb-6`}>
+            <Avatar url={me.bot.avatar} name={me.bot.name} size={48} />
+            <div css={tw`flex-1 min-w-0`}>
+                <h1
+                    css={tw`text-2xl font-medium leading-tight truncate font-header`}
+                    style={{ color: 'var(--color-base)' }}
+                >
+                    {title}
+                </h1>
+                <div css={tw`flex flex-wrap items-center gap-2 mt-1 text-sm`} style={{ color: 'var(--color-muted)' }}>
+                    <Dot on />
+                    <span>
+                        {me.bot.name}
+                        {current && me.guilds.length === 1 ? (
+                            <>
+                                {' '}
+                                on <b style={{ color: 'var(--color-base)' }}>{current.name}</b>
+                            </>
+                        ) : null}
+                    </span>
+                    <span>·</span>
+                    <span>up {formatUptime(me.bot.uptime)}</span>
+                    <span>·</span>
+                    <span>{me.bot.ping} ms</span>
+                    <span>·</span>
+                    <span>v{me.bot.version}</span>
+                </div>
+            </div>
+            {me.guilds.length > 1 && (
+                <div style={{ width: 240 }} title={'Discord server'}>
+                    <Select value={guildId ?? ''} onChange={(e) => store.pick(e.currentTarget.value)}>
+                        {me.guilds.map((g) => (
+                            <option key={g.id} value={g.id}>
+                                {g.name}
+                            </option>
+                        ))}
+                    </Select>
+                </div>
+            )}
+            {manual && (
+                <Button.Text
+                    size={Button.Sizes.Small}
+                    onClick={store.logout}
+                    title={'Log out of Ditto in this browser'}
+                >
+                    <FontAwesomeIcon icon={faSignOutAlt} css={tw`mr-2`} />
+                    Log out
+                </Button.Text>
+            )}
+        </div>
     );
 };
 
 export default () => {
     const uuid = ServerContext.useStoreState((state) => state.server.data!.uuid);
+    const id = ServerContext.useStoreState((state) => state.server.data!.id);
+    const { pathname } = useLocation();
     const { addFlash, clearFlashes } = useFlash();
+    const store = useDitto(uuid);
+    const { status, me, guild } = store.state;
 
-    const [state, setState] = useState<'loading' | 'login' | 'ready' | 'down'>('loading');
-    const [problem, setProblem] = useState('');
-    const [me, setMe] = useState<DittoMe | null>(null);
-    const [guildId, setGuildId] = useState<string | null>(remember(`ditto:guild:${uuid}`));
-    const [guild, setGuild] = useState<DittoGuild | null>(null);
-    const [tab, setTab] = useState<TabId>((remember('ditto:tab') as TabId) || 'overview');
-    const live = useRef<number>();
+    const key = /\/ditto\/([a-z]+)\/?$/.exec(pathname)?.[1] ?? 'overview';
+    const section = SECTIONS[key] ?? SECTIONS.overview;
 
-    const flash = (message: string, type: 'success' | 'error' = 'success') => {
+    store.notify = (message, type = 'success') => {
         clearFlashes('ditto');
         addFlash({ key: 'ditto', type, message });
+        if (type === 'success') window.setTimeout(() => clearFlashes('ditto'), 3000);
     };
 
-    const fail = useCallback(
-        (err: DittoError) => {
-            if (err.status === 401) {
-                setDittoToken(uuid, null);
-                setState('login');
-            } else if (err.code === 'unreachable' || err.code === 'not_ditto') {
-                setProblem(err.message);
-                setState('down');
-            } else flash(err.message, 'error');
-        },
-        [uuid]
-    );
+    useEffect(() => () => clearFlashes('ditto'), []);
 
-    const loadGuild = useCallback(
-        (id: string) => ditto<DittoGuild>(uuid, 'get', `guilds/${id}`).then(setGuild).catch(fail),
-        [uuid]
-    );
-
-    const load = useCallback(() => {
-        setState('loading');
-        ditto<DittoMe>(uuid, 'get', 'me')
-            .then((data) => {
-                setMe(data);
-                setState('ready');
-                const id = data.guilds.some((g) => g.id === guildId) ? guildId : data.guilds[0]?.id ?? null;
-                setGuildId(id);
-                if (id) return loadGuild(id);
-                return undefined;
-            })
-            .catch(fail);
-    }, [uuid, guildId]);
-
-    useEffect(load, [uuid]);
-
-    // Music and logs change on their own: fetch them every few seconds.
+    // While Ditto is down, look again now and then: it comes back on its own after a restart.
     useEffect(() => {
-        if (state !== 'ready' || !guildId) return undefined;
-        live.current = window.setInterval(() => {
-            if (document.hidden) return;
-            ditto<DittoLive>(uuid, 'get', `guilds/${guildId}/live`)
-                .then((data) =>
-                    setGuild((g) => (g && g.id === guildId ? { ...g, music: data.music, logs: data.logs } : g))
-                )
-                .catch(() => undefined);
-        }, 4000);
-        return () => window.clearInterval(live.current);
-    }, [state, guildId, uuid]);
+        if (status !== 'down') return undefined;
+        const timer = window.setInterval(() => !document.hidden && store.load(true), 10000);
+        return () => window.clearInterval(timer);
+    }, [status]);
 
-    const pick = (id: string) => {
-        remember(`ditto:guild:${uuid}`, id);
-        setGuildId(id);
-        setGuild(null);
-        loadGuild(id);
-    };
+    const link = (to: string) => `/server/${id}/ditto/${to}`;
+    const { Page } = section;
 
-    const actions: DittoActions = {
-        save: (field, values) =>
-            ditto(uuid, 'patch', `guilds/${guildId}/config`, { field, values })
-                .then(() => loadGuild(guildId!))
-                .then(() => flash('Saved.'))
-                .catch(fail),
-        run: (action) =>
-            ditto<any>(uuid, 'post', `guilds/${guildId}/actions/${action}`)
-                .then((r) => {
-                    if (action === 'quick-setup')
-                        flash(`Done: ${r.created.length} created, ${r.hidden} channel(s) hidden from newcomers.`);
-                    else if (action === 'detect')
-                        flash(r.filled.length ? `Filled ${r.filled.length} setting(s).` : 'Nothing new found.');
-                    else
-                        flash(
-                            r.posted ? 'Verify panel posted.' : 'There is no verification channel yet.',
-                            r.posted ? 'success' : 'error'
-                        );
-                    return loadGuild(guildId!);
-                })
-                .catch(fail),
-        music: (action, body) =>
-            ditto<any>(uuid, 'post', `guilds/${guildId}/music/${action}`, body ?? {})
-                .then((r) => {
-                    if (action === 'play')
-                        flash(
-                            r.added > 1
-                                ? `Added ${r.added} tracks.`
-                                : r.position === 0
-                                ? 'Playing.'
-                                : `Added — #${r.position} in the queue.`
-                        );
-                    window.setTimeout(() => loadGuild(guildId!), action === 'play' ? 1500 : 300);
-                })
-                .catch(fail),
-        unlock: (channelId) =>
-            ditto(uuid, 'delete', `guilds/${guildId}/locks/${channelId}`)
-                .then(() => loadGuild(guildId!))
-                .then(() => flash('Unlocked.'))
-                .catch(fail),
-    };
-
-    const logout = () => {
-        ditto(uuid, 'post', 'logout').catch(() => undefined);
-        setDittoToken(uuid, null);
-        setMe(null);
-        setGuild(null);
-        setState('login');
-    };
+    // /ditto alone: the overview, at the address its sidebar entry points to.
+    if (/\/ditto\/?$/.test(pathname)) return <Redirect to={link('overview')} />;
 
     return (
-        <ServerContentBlock title={'Ditto'}>
+        <ServerContentBlock title={`Ditto · ${section.title}`}>
             <FlashMessageRender byKey={'ditto'} css={tw`mb-4`} />
-            {state === 'loading' && <Spinner size={'large'} centered />}
-            {state === 'login' && <Login uuid={uuid} onDone={load} />}
-            {state === 'down' && (
-                <Card css={tw`max-w-xl mx-auto mt-8 text-center`}>
-                    <CardTitle css={tw`justify-center`}>
-                        <FontAwesomeIcon icon={faRobot} /> Ditto is not answering
-                    </CardTitle>
-                    <p css={tw`mb-2 text-sm`} style={{ color: 'var(--color-base)' }}>
-                        {problem}
-                    </p>
-                    <p css={tw`mb-4 text-sm`}>
-                        <Muted>Start the server, wait for “[dashboard] open …” in the console, then try again.</Muted>
-                    </p>
-                    <Button onClick={load}>
-                        <FontAwesomeIcon icon={faSync} css={tw`mr-2`} />
-                        Try again
-                    </Button>
-                </Card>
-            )}
-            {state === 'ready' && me && (
+            {status === 'loading' && <Spinner size={'large'} centered />}
+            {status === 'login' && <Login store={store} />}
+            {status === 'down' && <Down store={store} />}
+            {status === 'ready' && me && (
                 <>
-                    <Row css={tw`mb-4`}>
-                        <Avatar url={me.bot.avatar} name={me.bot.name} size={44} />
-                        <div css={tw`mr-auto`}>
-                            <div css={tw`text-lg font-bold`} style={{ color: 'var(--color-base)' }}>
-                                {me.bot.name}
-                            </div>
-                            <Muted css={tw`text-xs`}>
-                                v{me.bot.version} · up {formatUptime(me.bot.uptime)} · {me.bot.ping} ms
-                            </Muted>
-                        </div>
-                        <Pill $tone={me.bot.music ? 'good' : 'bad'}>
-                            {me.bot.music ? 'Music ready' : 'Music starting'}
-                        </Pill>
-                        <Pill>{me.bot.photos} captcha photos</Pill>
-                        {me.guilds.length > 1 && (
-                            <div css={tw`w-56`}>
-                                <Select value={guildId ?? ''} onChange={(e) => pick(e.currentTarget.value)}>
-                                    {me.guilds.map((g) => (
-                                        <option key={g.id} value={g.id}>
-                                            {g.name}
-                                        </option>
-                                    ))}
-                                </Select>
-                            </div>
-                        )}
-                        <Button color={'grey'} size={'xsmall'} onClick={logout} title={'Log out of Ditto'}>
-                            <FontAwesomeIcon icon={faSignOutAlt} />
-                        </Button>
-                    </Row>
+                    <Header store={store} title={key === 'overview' ? me.bot.name : section.title} />
                     {!me.guilds.length ? (
                         <Card>
-                            <Muted>Ditto is in no Discord server you can manage yet.</Muted>
+                            <CardBody css={tw`flex flex-col items-center gap-4 py-10 text-sm text-center`}>
+                                <Muted>Ditto is not in any Discord server you can manage yet.</Muted>
+                                {me.bot.invite && (
+                                    <a href={me.bot.invite} target={'_blank'} rel={'noopener noreferrer'}>
+                                        <Button>
+                                            <FontAwesomeIcon icon={faPlus} css={tw`mr-2`} />
+                                            Add Ditto to a Discord server
+                                        </Button>
+                                    </a>
+                                )}
+                            </CardBody>
                         </Card>
                     ) : !guild ? (
                         <Spinner size={'large'} centered />
                     ) : (
                         <>
-                            <Tabs>
-                                {TABS.map((t) => (
-                                    <Tab
-                                        key={t.id}
-                                        $active={tab === t.id}
-                                        onClick={() => {
-                                            remember('ditto:tab', t.id);
-                                            setTab(t.id);
-                                        }}
-                                    >
-                                        <FontAwesomeIcon icon={t.icon} />
-                                        {t.label}
-                                    </Tab>
-                                ))}
-                            </Tabs>
                             {guild.warnings.map((w) => (
-                                <Card
-                                    key={w}
-                                    css={tw`mb-4 text-sm`}
-                                    style={{ borderColor: '#f59e0b', color: '#f59e0b' }}
-                                >
-                                    <FontAwesomeIcon icon={faBolt} css={tw`mr-2`} />
+                                <Alert key={w} type={'warning'} className={'mb-4'}>
                                     {w}
-                                </Card>
+                                </Alert>
                             ))}
-                            {tab === 'overview' && <OverviewTab guild={guild} actions={actions} />}
-                            {tab === 'captcha' && <CaptchaTab guild={guild} actions={actions} />}
-                            {tab === 'music' && <MusicTab guild={guild} actions={actions} />}
-                            {tab === 'voice' && <VoiceTab guild={guild} actions={actions} />}
-                            {tab === 'settings' && <SettingsTab guild={guild} actions={actions} />}
-                            {tab === 'logs' && <LogsTab guild={guild} />}
+                            <Page store={store} guild={guild} link={link} />
                         </>
                     )}
                 </>

@@ -20,8 +20,9 @@ simplest to the most integrated.
 ## Luna
 
 With the **Luna** theme, use [extras/luna](../luna/README.md) instead of the steps
-below: one script adds a native **Ditto** page, drawn in your Luna colours, that
-works on HTTPS panels without any proxy setup.
+below: one script adds a **Ditto** group to the server sidebar, drawn in your Luna
+colours, with no password to type, and it works on HTTPS panels without any proxy
+setup.
 
 ## 2. A « Ditto » tab — a stock panel built from source
 

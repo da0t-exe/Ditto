@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * Ditto addon for Luna: adds (or removes) the two lines Ditto needs in the panel's
- * sources — the page's route and the API route that reaches the bot. Safe to run
- * again: nothing is added twice.
+ * Ditto addon for Luna: adds (or removes) what Ditto needs in the panel's sources —
+ * the routes of its pages and the API route that reaches the bot. Safe to run again:
+ * nothing is added twice.
  *
  *   node patch.cjs <panel folder> add|remove
  */
@@ -30,7 +30,19 @@ function edit(relative, fn) {
     console.log(`${mode === 'add' ? 'patched' : 'restored'} ${relative}`);
 }
 
-// The page: /server/{id}/ditto, for people with console access.
+// The pages: /server/{id}/ditto/<section>, for people with console access. Their names
+// are what the sidebar entries point to (see navlink.php). /ditto itself leads to the
+// overview; it has no name, so no sidebar entry of its own.
+const PAGES = [
+    ['/ditto', undefined],
+    ['/ditto/overview', 'Ditto'],
+    ['/ditto/captcha', 'Ditto Captcha'],
+    ['/ditto/music', 'Ditto Music'],
+    ['/ditto/voice', 'Ditto Voice'],
+    ['/ditto/settings', 'Ditto Settings'],
+    ['/ditto/logs', 'Ditto Logs'],
+];
+
 edit('resources/scripts/routers/routes.ts', (text) => {
     if (mode === 'remove') return text;
     const lazy = block([`const DittoContainer = lazy(() => import('@/components/server/ditto/DittoContainer'));`]);
@@ -41,11 +53,18 @@ edit('resources/scripts/routers/routes.ts', (text) => {
     const server = /server:\s*\[[^\n]*\n/.exec(text);
     if (!server) throw new Error('routes.ts: could not find the "server: [" list');
     const at = server.index + server[0].length;
-    const route = block(
-        ['{', `    path: '/ditto',`, `    permission: 'control.console',`, `    name: 'Ditto',`, '    component: DittoContainer,', '},'],
+    const routes = block(
+        PAGES.flatMap(([path, name]) => [
+            '{',
+            `    path: '${path}',`,
+            `    permission: 'control.console',`,
+            name ? `    name: '${name}',` : '    name: undefined,',
+            '    component: DittoContainer,',
+            '},',
+        ]),
         '        '
     );
-    return text.slice(0, at) + route + text.slice(at);
+    return text.slice(0, at) + routes + text.slice(at);
 });
 
 // The API: /api/client/servers/{server}/ditto/…, behind the same checks as every server route.
