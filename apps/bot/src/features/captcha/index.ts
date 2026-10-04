@@ -26,7 +26,7 @@ import { GRID } from './cells.js';
 import { promptFor } from './classes.js';
 import { hasReady, nextChallenge, prepareChallenges } from './grid.js';
 import { dropOutdatedExtras, getPool, reloadPool } from './pool.js';
-import { closeSession, getSession, getState, markVerified, MAX_REFRESH, nextRound, openSession, record, setState, type Session } from './session.js';
+import { closeSession, getSession, getState, markVerified, MAX_REFRESH, nextRound, openSession, setState, type Session } from './session.js';
 
 // ---------- Settings ----------
 
@@ -202,7 +202,6 @@ async function succeed(i: ButtonInteraction<'cached'>, s: Session) {
     return i.editReply(endCard(COLOR.warn, '### ⚠️ Captcha passed\nBut I could not give you access. A staff member will sort it out.'));
   }
   markVerified(i.guildId, i.user.id);
-  record(i.guildId, i.user.id, 'pass');
   logTo(i.guild, `✅ **${member.user.username}** passed the captcha`);
   return i.editReply(endCard(COLOR.success, `### ✅ You are verified\nWelcome to **${i.guild.name}**!`));
 }
@@ -210,13 +209,11 @@ async function succeed(i: ButtonInteraction<'cached'>, s: Session) {
 async function fail(i: ButtonInteraction<'cached'>, s: Session) {
   const cfg = getConfig(i.guildId);
   const failures = getState(i.guildId, i.user.id).failures + 1;
-  record(i.guildId, i.user.id, 'fail');
 
   if (failures >= cfg.captchaAttempts) {
     const until = Date.now() + cfg.captchaTimeoutMinutes * 60_000;
     setState(i.guildId, i.user.id, 0, until);
     closeSession(s);
-    record(i.guildId, i.user.id, 'lockout');
     await i.update(endCard(COLOR.danger, `### ❌ Too many misses\nYou can try again <t:${Math.ceil(until / 1000)}:R>.`));
     if (i.member.moderatable) {
       await i.member.timeout(cfg.captchaTimeoutMinutes * 60_000, `Failed the captcha ${cfg.captchaAttempts} times`).catch(() => {});
@@ -312,13 +309,11 @@ async function onJoin(member: GuildMember) {
     await member.roles.add(cfg.quarantineRole, 'Brought in by a member-pushing bot');
     // Quarantined instead of verified: the captcha is not for them.
     if (pending && !pendingError) await member.roles.remove(pending, 'Quarantined').catch(() => {});
-    record(member.guild.id, member.id, 'quarantine');
     logTo(member.guild, `🙈 **${name}** was brought in by a bot: quarantined`);
     return;
   }
   if (!verificationOn(cfg)) return;
   if (pendingError) throw pendingError;
-  record(member.guild.id, member.id, 'join');
   logTo(member.guild, `👋 **${name}** joined, captcha pending`);
 }
 

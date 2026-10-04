@@ -1,7 +1,7 @@
 import { Events, type Client } from 'discord.js';
 import { LavalinkManager, type Player } from 'lavalink-client';
 import { log } from '../../core/log.js';
-import { activeNode, startLavalink, type NodeConfig } from './lavalink.js';
+import { activeNode, startLavalink } from './lavalink.js';
 import { UserError } from './search.js';
 
 /** Glue between Ditto's players and the Lavalink node. */
@@ -35,7 +35,6 @@ function playOf(...tracks: Tagged[]) {
 }
 
 let manager: LavalinkManager | null = null;
-let node: NodeConfig | null = null;
 let ready = false;
 
 export function initEngine(client: Client, hooks: EngineHooks) {
@@ -45,7 +44,7 @@ export function initEngine(client: Client, hooks: EngineHooks) {
 
   client.once(Events.ClientReady, async (c) => {
     try {
-      node = await startLavalink(hooks.isIdle);
+      const node = await startLavalink(hooks.isIdle);
       manager = new LavalinkManager({
         nodes: [
           {
@@ -92,11 +91,6 @@ export function initEngine(client: Client, hooks: EngineHooks) {
       log.error('music', 'music is unavailable, Lavalink could not start:', (err as Error).message);
     }
   });
-}
-
-/** For the dashboard: whether music works, and the Lavalink version. */
-export function musicStatus() {
-  return { ready, node: node ? `${node.host}:${node.port}` : null };
 }
 
 export function lavalink(): LavalinkManager {

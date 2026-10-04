@@ -54,17 +54,6 @@ function unlock(channelId: string) {
 
 const guildLocks = (guildId: string) => [...locks.values()].filter((l) => l.guildId === guildId);
 
-/** For the dashboard. */
-export const listLocks = (guildId: string) =>
-  guildLocks(guildId).map((l) => ({ channelId: l.channelId, members: l.members.size, expiresAt: l.expiresAt, createdBy: l.createdBy }));
-
-export function removeLock(guild: Guild, channelId: string, by: string) {
-  if (!locks.has(channelId) || locks.get(channelId)!.guildId !== guild.id) return false;
-  unlock(channelId);
-  logTo(guild, `🔓 **${by}** unlocked <#${channelId}>`);
-  return true;
-}
-
 async function pullBack(member: GuildMember, channelId: string) {
   const channel = member.guild.channels.cache.get(channelId);
   if (!channel?.isVoiceBased()) return;

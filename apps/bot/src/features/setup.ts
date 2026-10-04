@@ -14,7 +14,6 @@ import {
   type Guild,
 } from 'discord.js';
 import { applyDetection, getConfig, hasConfig, updateConfig, type GuildConfig } from '../core/config.js';
-import { env } from '../env.js';
 import { log } from '../core/log.js';
 import { requirePrivileged } from '../core/perms.js';
 import type { Feature } from '../core/types.js';
@@ -66,7 +65,6 @@ function overview(guild: Guild, cfg: GuildConfig) {
   const extra = [
     `-# ${pool ? `${pool.images.length} captcha photos` : 'no captcha photos'} · music ready with \`/play\` · type \`/help\` for every command`,
   ];
-  if (env.dashboard) extra.push('-# 🌐 Manage everything from the web: `/dashboard`');
   return [
     '**Quick setup** creates what is missing — an *Unverified* role, a #verify channel and a private #ditto-logs — hides the server from newcomers until they pass the captcha, and posts the panel. Existing members are not affected, and deleting the *Unverified* role undoes it.',
     lines.join('\n'),
@@ -80,7 +78,7 @@ const HELP: Record<Exclude<Page, 'home'>, string> = {
   quarantine:
     'Members brought in by a member-pushing bot get the **quarantine role** instead of the captcha. Give that role no access at all and they never see the server.',
   staff:
-    '**Staff** roles can use every Ditto command, including `/setup`, `/captcha` and the dashboard. Administrators and the server owner always can.',
+    '**Staff** roles can use every Ditto command, including `/setup` and `/captcha`. Administrators and the server owner always can.',
   voice:
     '**Rooms** go back to their original name, limit and permissions when they empty; the first person in owns the room and customises it with `/room`. The **log channel** receives joins, moves and moderation.',
 };
@@ -226,7 +224,7 @@ function confirmQuick(guild: Guild, page: string) {
 export const setupViews = { view, confirmQuick };
 
 /** Side effects of a change: refresh the captcha panel, record rooms. */
-export async function afterChange(guild: Guild, fields: string[]) {
+async function afterChange(guild: Guild, fields: string[]) {
   if (fields.some((f) => ['verifyChannel', 'pendingRole', 'memberRole', 'captchaAttempts', 'captchaTimeoutMinutes'].includes(f))) {
     await ensurePanel(guild).catch(() => {});
   }
@@ -235,14 +233,14 @@ export async function afterChange(guild: Guild, fields: string[]) {
 
 const SINGLE = new Set(['memberRole', 'pendingRole', 'quarantineRole', 'verifyChannel', 'logChannel']);
 const LIST = new Set(['staffRoles', 'rooms', 'quarantineBots']);
-/** The values each numeric setting can take, in /setup and on the dashboard alike. */
-export const NUMBER_CHOICES = new Map<NumberField, number[]>([
+/** The values each numeric setting can take. */
+const NUMBER_CHOICES = new Map<NumberField, number[]>([
   ['captchaAttempts', [3, 4, 5, 6]],
   ['captchaTimeoutMinutes', [5, 10, 30, 60]],
   ['afkIdleMinutes', [5, 10, 15, 30, 60]],
 ]);
 
-/** Applies a change coming from /setup or the dashboard. False when the setting or its value is not one Ditto knows. */
+/** Applies a change made in /setup. False when the setting or its value is not one Ditto knows. */
 export async function applySetting(guild: Guild, field: string, values: string[]) {
   const patch: Partial<GuildConfig> = {};
   const choices = NUMBER_CHOICES.get(field as NumberField);

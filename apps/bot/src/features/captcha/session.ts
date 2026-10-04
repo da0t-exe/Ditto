@@ -85,32 +85,3 @@ export function markVerified(guildId: string, userId: string) {
   verifiedStmt.run(guildId, userId, Date.now());
 }
 
-// ---------- History, for the dashboard ----------
-
-export type CaptchaEvent = 'join' | 'pass' | 'fail' | 'lockout' | 'quarantine';
-
-const insertEvent = db.prepare('INSERT INTO captcha_log (guild_id, user_id, event, at) VALUES (?, ?, ?, ?)');
-db.prepare('DELETE FROM captcha_log WHERE at < ?').run(Date.now() - 90 * 24 * 3600_000);
-
-export function record(guildId: string, userId: string, event: CaptchaEvent) {
-  insertEvent.run(guildId, userId, event, Date.now());
-}
-
-const countsSince = db.prepare<[string, number], { event: CaptchaEvent; n: number }>(
-  'SELECT event, COUNT(*) AS n FROM captcha_log WHERE guild_id = ? AND at >= ? GROUP BY event'
-);
-const perDay = db.prepare<[string, number], { day: string; event: CaptchaEvent; n: number }>(
-  `SELECT strftime('%Y-%m-%d', at / 1000, 'unixepoch') AS day, event, COUNT(*) AS n
-   FROM captcha_log WHERE guild_id = ? AND at >= ? GROUP BY day, event ORDER BY day`
-);
-const latest = db.prepare<[string], { user_id: string; event: CaptchaEvent; at: number }>(
-  'SELECT user_id, event, at FROM captcha_log WHERE guild_id = ? ORDER BY at DESC LIMIT 30'
-);
-
-/** Passes, misses and arrivals over the last days, plus the latest events. */
-export function captchaStats(guildId: string, days = 14) {
-  const since = Date.now() - days * 24 * 3600_000;
-  const totals: Record<CaptchaEvent, number> = { join: 0, pass: 0, fail: 0, lockout: 0, quarantine: 0 };
-  for (const r of countsSince.all(guildId, since)) totals[r.event] = r.n;
-  return { totals, days: perDay.all(guildId, since), latest: latest.all(guildId) };
-}

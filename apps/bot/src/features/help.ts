@@ -2,7 +2,6 @@ import { MessageFlags, SlashCommandBuilder } from 'discord.js';
 import { isPrivileged } from '../core/perms.js';
 import type { Feature } from '../core/types.js';
 import { card, COLOR, V2 } from '../core/ui.js';
-import { env } from '../env.js';
 
 const MUSIC =
   '### 🎵 Music\n' +
@@ -18,8 +17,7 @@ const VOICE =
 const STAFF =
   '### 🛡️ Staff\n' +
   '`/setup` — every setting, and **Quick setup** to get the captcha running in one click\n' +
-  '`/captcha test` · `/captcha reset` · `/captcha panel` · `/captcha reload`' +
-  (env.dashboard ? '\n`/dashboard` — manage Ditto from the web' : '');
+  '`/captcha test` · `/captcha reset` · `/captcha panel` · `/captcha reload`';
 
 export const helpFeature: Feature = {
   name: 'help',

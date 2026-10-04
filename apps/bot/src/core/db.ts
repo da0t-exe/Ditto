@@ -35,23 +35,6 @@ db.exec(`
     last_used INTEGER NOT NULL DEFAULT 0
   );
 
-  -- Arrivals, passes and misses, for the dashboard.
-  CREATE TABLE IF NOT EXISTS captcha_log (
-    guild_id TEXT NOT NULL,
-    user_id  TEXT NOT NULL,
-    event    TEXT NOT NULL,
-    at       INTEGER NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS captcha_log_guild_at ON captcha_log (guild_id, at);
-
-  -- Dashboard logins: only a hash of each token is kept.
-  CREATE TABLE IF NOT EXISTS dashboard_sessions (
-    token_hash TEXT PRIMARY KEY,
-    guild_id   TEXT,
-    user_id    TEXT,
-    expires_at INTEGER NOT NULL
-  );
-
   CREATE TABLE IF NOT EXISTS voice_locks (
     channel_id TEXT PRIMARY KEY,
     guild_id   TEXT NOT NULL,
@@ -67,7 +50,3 @@ db.exec(`
     owner_id   TEXT
   );
 `);
-
-// Added in 0.6: the name shown in the logs for logins made from the Pterodactyl panel.
-const sessionColumns = db.prepare<[], { name: string }>('PRAGMA table_info(dashboard_sessions)').all();
-if (!sessionColumns.some((c) => c.name === 'label')) db.exec('ALTER TABLE dashboard_sessions ADD COLUMN label TEXT');

@@ -4,7 +4,7 @@
 
 # Ditto
 
-Voice tools, music, a reCAPTCHA-style captcha and a web dashboard for Discord.
+Voice tools, music and a reCAPTCHA-style captcha for Discord.
 
 <a href="https://github.com/da0t-exe/Ditto/releases"><img src="./assets/badges/version.svg" alt="version 0.6.0" /></a>
 <img src="./assets/badges/node.svg" alt="node 20+" />
@@ -14,11 +14,12 @@ Voice tools, music, a reCAPTCHA-style captcha and a web dashboard for Discord.
 </div>
 
 Ditto looks after the voice side of a server and the door in front of it: a
-captcha for newcomers, music for everyone, voice tools for moderators, and a
-dashboard to run it all from the browser. Everything is set up from Discord with
-`/setup` — **Quick setup** does it in one click.
+captcha for newcomers, music for everyone, and voice tools for moderators.
+Everything is set up from Discord with `/setup` — **Quick setup** does it in one
+click.
 
-What changed in each version: [CHANGELOG.md](CHANGELOG.md).
+What changed in each version: [CHANGELOG.md](CHANGELOG.md). The web dashboard and
+its pages for the Pterodactyl panel live on the `dashboard` branch.
 
 ## Features
 
@@ -79,25 +80,6 @@ is ticked.
 - Members deafened for a while (10 minutes by default) go to the AFK channel, and
   joins, leaves and moves are written to a log channel.
 
-### 🌐 Dashboard
-
-<img src="./assets/preview-dashboard.jpg" alt="The Ditto dashboard, music tab" />
-
-A web dashboard served by Ditto itself — no second program to run:
-
-- every setting of `/setup`, with **Quick setup** and **Auto-detect**;
-- captcha statistics over 14 days and the latest arrivals, passes and misses;
-- the music player with its queue: play, pause, skip, seek, volume, loop, filters,
-  add or remove tracks;
-- locked channels, with an unlock button, and the live activity log.
-
-Dark by default, with a light mode and an accent colour you pick to match your
-panel. On Pterodactyl it also fits in the panel: with the Luna theme, one script
-adds a **Ditto** group to each server's sidebar (Overview, Captcha, Music, Voice,
-Bot settings, Logs), with no password to type
-([extras/luna](extras/luna/README.md)); for a stock panel or Blueprint, see
-[extras/pterodactyl](extras/pterodactyl/README.md).
-
 ## Commands
 
 | Command | What it does | Who |
@@ -112,7 +94,6 @@ Bot settings, Logs), with no password to type
 | `/lyrics [song]` | Lyrics of the current track, or of any song | Anyone |
 | `/help` | What Ditto can do | Anyone |
 | `/setup` | Every setting, and Quick setup | Staff |
-| `/dashboard` | A private one-time link to the web dashboard | Staff |
 | `/captcha test` | Try the captcha without touching your roles, then see the expected squares | Staff |
 | `/captcha reset <member>` | Clear a member's misses and timeout | Staff |
 | `/captcha panel` · `/captcha reload` | Post the Verify panel again, or reload the photos | Staff |
@@ -169,19 +150,11 @@ show up instantly. On the first start Ditto fetches what music needs, into `data
 a **Java 21** runtime (unless Java 17+ is installed), the newest **Lavalink 4.x**
 with its YouTube plugin, and **yt-dlp** — all kept up to date on their own.
 
-The console then shows where the dashboard is and its password:
-
-```text
-[dashboard] open http://203.0.113.10:25565
-[dashboard] admin password: 9Qe…   (set DASHBOARD_PASSWORD to choose your own)
-```
-
 Plan about 1 GB of RAM (Lavalink uses 512 MB). On Linux, Discord's voice
 encryption (DAVE) needs glibc 2.35 or newer (Debian 12, Ubuntu 22.04 and later).
 
 **Pterodactyl:** use a Node.js 20+ image (22 recommended) with `npm start` as the
-startup command. The dashboard listens on the server's own port, so it works with
-no extra allocation. To update, set the startup command once to
+startup command. To update, set the startup command once to
 `git fetch origin && git reset --hard origin/main && npm install --omit=dev && npm start`,
 start, then set it back — `.env` and `data/` are never touched.
 
@@ -191,12 +164,6 @@ start, then set it back — `.env` and `data/` are never touched.
 | `OWNER_ID` | A user who passes every permission check |
 | `GUILD_IDS` | Comma-separated servers to run on (empty = all) |
 | `DATA_DIR` | Where state is kept (default `data/`) |
-| `DASHBOARD` | `0` turns the dashboard off |
-| `DASHBOARD_PORT` | Its port (default: Pterodactyl's `SERVER_PORT`, else 3000) |
-| `DASHBOARD_PASSWORD` | The admin password (default: generated, printed at start) |
-| `DASHBOARD_URL` | Its public address, for the `/dashboard` links (e.g. `https://ditto.example.com`) |
-| `DASHBOARD_FRAME_ANCESTORS` | Sites allowed to show it in a frame, e.g. your panel's address |
-| `DASHBOARD_CONSOLE_LOGIN` | `0` stops the Luna panel pages from logging people in through the server's console |
 | `LAVALINK_HOST` · `LAVALINK_PORT` · `LAVALINK_PASSWORD` | Use an external Lavalink node instead of the built-in one |
 | `LAVALINK_MEMORY` | Memory for the built-in Lavalink (default `512M`) |
 
@@ -205,7 +172,7 @@ start, then set it back — `.env` and `data/` are never touched.
 | `npm start` | Run the bot |
 | `npm run dev` | Run and restart on file changes |
 | `npm run typecheck` | Type-check without running |
-| `npm run selftest` | Offline checks: captcha, message layouts, search ranking, settings, the music queue, the dashboard API |
+| `npm run selftest` | Offline checks: captcha, message layouts, search ranking, settings, the music queue |
 | `npm run captcha:fetch [n]` | Add up to `n` more photos per category from Open Images, then `/captcha reload` |
 
 ## Architecture
@@ -228,13 +195,9 @@ apps/bot/
     │   ├── setup.ts    /setup, quicksetup.ts the one-click setup, help.ts /help
     │   ├── captcha/    Photo database, reCAPTCHA renderer, challenges, verification flow
     │   ├── music/      Built-in Lavalink, search and links, player, player message, lyrics
-    │   ├── voice/      Voice commands, locks, rooms, auto-AFK, voice log
-    │   └── dashboard.ts /dashboard
-    ├── dashboard/      Web server, login, JSON API, and the page (public/)
+    │   └── voice/      Voice commands, locks, rooms, auto-AFK, voice log
     └── scripts/        selftest, captcha:fetch, music-check, lavalink-check, music-lab
 .github/workflows/      release.yml: publishes a GitHub release from CHANGELOG.md (Actions → Release)
-extras/luna/            The Ditto pages for the Luna theme's sidebar (install.sh)
-extras/pterodactyl/     The Ditto tab for a stock Pterodactyl panel or Blueprint
 ```
 
 - **Features** each export their slash commands, button and menu handlers, event
@@ -249,14 +212,9 @@ extras/pterodactyl/     The Ditto tab for a stock Pterodactyl panel or Blueprint
   host's own network. `player.ts` hands each track to Lavalink, through the direct
   stream address yt-dlp finds or a downloaded copy when that fails, and prepares
   what comes next. `views.ts` draws the player.
-- **Dashboard:** `server.ts` serves the page and the API on `SERVER_PORT`;
-  `auth.ts` checks the admin password, a one-time `/dashboard` link, or a
-  one-time code the Luna panel types in the server's console, and keeps only a
-  hash of each session token.
-- **Storage** (`data/`, git-ignored): `ditto.db` holds settings, captcha attempts
-  and history, locks, rooms and dashboard sessions; `lavalink/` holds Java,
-  Lavalink and its config; `bin/` holds yt-dlp; `captcha/` holds photos added with
-  `captcha:fetch`.
+- **Storage** (`data/`, git-ignored): `ditto.db` holds settings, captcha attempts,
+  locks and rooms; `lavalink/` holds Java, Lavalink and its config; `bin/` holds
+  yt-dlp; `captcha/` holds photos added with `captcha:fetch`.
 
 ## License
 

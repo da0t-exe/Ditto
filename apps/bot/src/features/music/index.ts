@@ -120,8 +120,8 @@ async function vote(i: Ctx, music: GuildMusic, votes: Set<string>, act: () => vo
 
 // ---------- /play ----------
 
-/** Starts or adds to the music in `channel`; shared with the dashboard. */
-export async function playIn(
+/** Starts or adds to the music in `channel`. */
+async function playIn(
   guild: Guild,
   channel: VoiceBasedChannel,
   textChannelId: string | null,
@@ -159,7 +159,7 @@ export async function playIn(
     throw new UserError(`I could not join ${channel}.`);
   }
   const position = await music.enqueue(tracks, next);
-  // Started from the dashboard, the channel may have nobody in it: the usual countdown applies.
+  // Whoever asked may have left in the meantime: an empty channel gets the usual countdown.
   music.checkEmpty(humansIn(music));
   return { music, tracks, position, playlist };
 }
@@ -457,11 +457,6 @@ async function onComponent(i: MessageComponentInteraction<'cached'>, [action, ar
       return;
   }
 }
-
-// ---------- For the dashboard ----------
-
-export const musicOf = (guildId: string) => players.get(guildId) ?? null;
-export { refreshPlayer };
 
 // ---------- Feature ----------
 
