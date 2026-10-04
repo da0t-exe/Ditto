@@ -5,7 +5,7 @@ import { card, COLOR, V2 } from '../core/ui.js';
 
 const MUSIC =
   '### 🎵 Music\n' +
-  '`/play` a song name or a link — Ditto picks the best match · `/skip` · `/previous` · `/pause` · `/resume` · `/stop`\n' +
+  '`/play` a song name — pick one of the suggestions — or a link · `/skip` · `/previous` · `/pause` · `/resume` · `/stop`\n' +
   '`/queue` · `/nowplaying` · `/volume` · `/loop` · `/shuffle` · `/remove` · `/clear` · `/seek` · `/filter` · `/lyrics`\n' +
   '-# The player message has buttons for all of it.';
 

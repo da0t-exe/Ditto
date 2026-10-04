@@ -22,9 +22,38 @@ web dashboard moved out of the main branch.
 
 - **Private links**: an address of the host or its network written as IPv6
   (`http://[::ffff:127.0.0.1]:2333/…`) got past the check and reached yt-dlp and
-  Lavalink. Link-local, multicast, NAT64 and benchmark ranges are refused too, and
-  the address a Deezer short link leads to is checked like any other.
+  Lavalink. Link-local, multicast and benchmark ranges are refused too, as is a
+  private address reached through NAT64, and the address a share link leads to is
+  checked like any other.
 - `undici` updated for three advisories (it comes with discord.js).
+
+### `/play`
+
+- **Suggestions are back.** As a name is typed, `/play` suggests songs from YouTube
+  Music, the closest match first, as it did before 0.6. Picking one plays exactly
+  that song; sending the words without picking still plays the best match. The
+  first suggestion is got ready while the list is on screen, so it starts within a
+  second when it is the one picked.
+- **"That link could not be played" on links that should play.** A link copied from
+  a YouTube mix or radio (`&list=RD…`, which nearly every link shared from YouTube
+  Music carries) made Ditto list the whole mix: hundreds of tracks, 20 to 30
+  seconds, cut off at 25. Such a link now plays the song it names. A playlist
+  opened on one of its videos starts with that video, and a video whose playlist
+  cannot be read still plays.
+- A YouTube link is read and made ready to play in one lookup instead of two.
+- yt-dlp is no longer alone in reading links. Lavalink reads SoundCloud, Bandcamp,
+  Twitch and plain audio files itself, in a fraction of a second where yt-dlp took
+  three; each takes over when the other fails, for YouTube too.
+- Vimeo is no longer listed among the sites that play: yt-dlp now wants an account
+  for it, and Lavalink reads its videos but cannot play them.
+- Links are found inside `< >` or next to a few words, and Spotify and Deezer share
+  links (`spotify.link`, `link.deezer.com`) are followed.
+- When a link cannot be played, Ditto says why — gone, private or age-restricted,
+  channel not live, nothing to play there, address not found — and the console
+  shows what yt-dlp answered.
+- YouTube now and then refuses a stream address it has just given out. Ditto asks
+  for a fresh one before falling back on slower ways, and a track cut in the middle
+  carries on from where it stopped instead of starting again.
 
 ### Music
 
@@ -75,7 +104,11 @@ web dashboard moved out of the main branch.
 - A bot that cannot log in (wrong token, Server Members intent off) stops with the
   reason instead of idling.
 - A server whose member list cannot be loaded is still set up.
-- `npm run selftest` also checks the settings and the music queue.
+- `npm run selftest` also checks the settings, the music queue and what `/play`
+  makes of what it is given.
+- `play-lab` runs the real `/play`, its suggestions and the queue commands against
+  YouTube Music, yt-dlp and Lavalink with a stand-in for Discord, and times how
+  long a track takes to start; `music-lab` plays the shapes links really come in.
 
 ### Tested
 
@@ -87,6 +120,15 @@ empty voice channel, driven from the dashboard before it moved: play, progress,
 pause, seek, the next track starting by itself at the end of one, skip, previous,
 loop, stop then play at once, and leaving the empty channel after a minute. Slash
 commands and the captcha's buttons were not clicked in Discord.
+
+The new `/play` was then tested without Discord. `play-lab` passes: suggestions,
+every kind of input and its answer, the queue commands, and the time to the first
+sound (0.3 s for a suggestion got ready ahead, about 3 s for one picked at once,
+about 5 s for a YouTube link, under a second for SoundCloud and audio files).
+`music-lab` played 18 of 20 kinds of link: the sample X link holds no video, and
+Vimeo no longer plays. Links were also read with yt-dlp made to fail, to see
+Lavalink and YouTube's embed service take over. The suggestions have not been typed
+in Discord, nor the new `/play` heard in a voice channel.
 
 ## 0.6.0 — 2026-09-27
 

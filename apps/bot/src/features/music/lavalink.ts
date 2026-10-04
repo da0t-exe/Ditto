@@ -225,6 +225,44 @@ let child: ChildProcess | null = null;
 /** The node in use, once started. */
 let active: NodeConfig | null = null;
 export const activeNode = () => active;
+
+/** A track as Lavalink describes it. */
+export interface LavalinkTrack {
+  encoded: string;
+  info: {
+    title: string;
+    author: string;
+    /** Milliseconds. */
+    length: number;
+    isStream: boolean;
+    uri: string | null;
+    artworkUrl: string | null;
+    sourceName: string;
+  };
+}
+
+export type LoadResult =
+  | { loadType: 'track'; data: LavalinkTrack }
+  | { loadType: 'search'; data: LavalinkTrack[] }
+  | { loadType: 'playlist'; data: { info: { name?: string }; tracks: LavalinkTrack[] } }
+  | { loadType: 'empty'; data: unknown }
+  | { loadType: 'error'; data: { message?: string; cause?: string } };
+
+/**
+ * Asks Lavalink to read an address: a web page, a direct media address or a local file.
+ * Null when no node is running (a script without Lavalink, or music still starting).
+ */
+export async function loadTracks(identifier: string, timeoutMs = 20_000): Promise<LoadResult | null> {
+  const node = active;
+  if (!node) return null;
+  const scheme = node.secure ? 'https' : 'http';
+  const res = await fetch(`${scheme}://${node.host}:${node.port}/v4/loadtracks?identifier=${encodeURIComponent(identifier)}`, {
+    headers: { Authorization: node.password },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!res.ok) throw new Error(`Lavalink answered HTTP ${res.status}`);
+  return (await res.json()) as LoadResult;
+}
 let stopping = false;
 let restartPending = false;
 /** Crashes in a row: each one waits longer before the next start. */

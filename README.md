@@ -51,16 +51,26 @@ is ticked.
 
 ### 🎵 Music
 
-- `/play` takes a song name or a link — no list to pick from: Ditto searches
-  YouTube Music's songs and keeps the best match, skipping remixes, live and
-  sped-up versions you did not ask for.
+- `/play` takes a song name or a link. As you type a name, Ditto **suggests songs**
+  from YouTube Music, the closest match first: pick one, or just send what you
+  typed and it plays the best match, skipping remixes, live and sped-up versions
+  you did not ask for.
 - Links from **YouTube** (Shorts and YouTube Music included), **SoundCloud**,
-  **Bandcamp**, **TikTok**, **Twitch**, **X**, **Instagram** and **Vimeo** play
-  directly. **Spotify**, **Apple Music**, **Deezer** and **Tidal** tracks are
-  matched on YouTube Music; Spotify, Apple Music and Deezer albums and playlists too.
-- **Fast:** Ditto joins the voice channel while it searches, looks up the next two
-  tracks while the current one plays, and remembers stream addresses, so tracks
-  start straight away. Nothing it runs in the background can freeze the bot.
+  **Bandcamp**, **TikTok**, **Twitch**, **X** and **Instagram** play directly.
+  **Spotify**, **Apple Music**, **Deezer** and **Tidal** tracks are matched on
+  YouTube Music; Spotify, Apple Music and Deezer albums and playlists too.
+- Links are taken as people share them: wrapped in `< >`, with a word next to
+  them, shortened. A link copied from a YouTube mix or radio plays the song itself,
+  and a playlist opened on one of its videos starts with that video. When a link
+  cannot be played, Ditto says why.
+- **Fast:** Ditto joins the voice channel while it searches, gets the first
+  suggestion ready while you look at the list, reads a YouTube link and its stream
+  in one go, looks up the next two tracks while the current one plays, and
+  remembers stream addresses, so tracks start straight away. SoundCloud, Bandcamp
+  and plain audio files are read by Lavalink itself, in a fraction of a second. Nothing Ditto runs in the background can freeze the bot.
+- **Sturdy:** every link and every track has more than one way through (yt-dlp,
+  Lavalink, a downloaded copy). A stream that YouTube cuts is asked for again, and
+  the track carries on from where it stopped.
 - **Smooth:** the built-in Lavalink runs with a larger audio buffer and a
   low-pause garbage collector, so playback does not stutter on small hosts.
 - A **live player**: cover, title, a progress bar that moves on its own, what comes
@@ -84,7 +94,7 @@ is ticked.
 
 | Command | What it does | Who |
 |---|---|---|
-| `/play query [next]` | Play a song, a link or a playlist — Ditto picks the best match | Anyone in voice |
+| `/play query [next]` | Play a song, a link or a playlist — with suggestions as you type | Anyone in voice |
 | `/skip` · `/previous` · `/stop` | Skip, go back, or stop and leave — straight away or by vote | Listeners |
 | `/pause` · `/resume` | Pause and resume | Listeners |
 | `/queue [page]` · `/nowplaying` | Show the queue, or post the player again | Anyone |
@@ -196,7 +206,7 @@ apps/bot/
     │   ├── captcha/    Photo database, reCAPTCHA renderer, challenges, verification flow
     │   ├── music/      Built-in Lavalink, search and links, player, player message, lyrics
     │   └── voice/      Voice commands, locks, rooms, auto-AFK, voice log
-    └── scripts/        selftest, captcha:fetch, music-check, lavalink-check, music-lab
+    └── scripts/        selftest, captcha:fetch, music-check, lavalink-check, music-lab, play-lab
 .github/workflows/      release.yml: publishes a GitHub release from CHANGELOG.md (Actions → Release)
 ```
 
@@ -208,10 +218,12 @@ apps/bot/
   least-shown photo, crops, mirrors and tints it, works out which of the 16 squares
   hold the object, and keeps a stock of ready challenges. `build.ts` builds photo
   databases from Open Images, preferring street scenes.
-- **Music:** `search.ts` turns text or a link into tracks and refuses links to the
-  host's own network. `player.ts` hands each track to Lavalink, through the direct
-  stream address yt-dlp finds or a downloaded copy when that fails, and prepares
-  what comes next. `views.ts` draws the player.
+- **Music:** `search.ts` suggests songs as a name is typed, turns text or a link
+  into tracks — asking yt-dlp and Lavalink in turn, so that one of them failing is
+  not the end of it — and refuses links to the host's own network. `player.ts`
+  hands each track to Lavalink, through the direct stream address yt-dlp finds or
+  a downloaded copy when that fails, and prepares what comes next. `views.ts` draws
+  the player.
 - **Storage** (`data/`, git-ignored): `ditto.db` holds settings, captcha attempts,
   locks and rooms; `lavalink/` holds Java, Lavalink and its config; `bin/` holds
   yt-dlp; `captcha/` holds photos added with `captcha:fetch`.

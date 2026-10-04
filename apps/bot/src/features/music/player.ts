@@ -40,7 +40,8 @@ const isYoutube = (t: Found) => t.source === 'youtube' || t.source === 'ytmusic'
 export function routesFor(track: Found): Route[] {
   if (DOWNLOAD_FIRST.includes(track.source)) return ['download'];
   const canDownload = !track.live && (track.duration ?? 0) <= MAX_DOWNLOAD_SECONDS;
-  const routes: Route[] = isYoutube(track) ? ['direct', 'lavalink'] : ['lavalink', 'direct'];
+  // What Lavalink has already read itself is ready to play: it goes first, YouTube or not.
+  const routes: Route[] = isYoutube(track) && !track.encoded ? ['direct', 'lavalink'] : ['lavalink', 'direct'];
   return canDownload ? [...routes, 'download'] : routes;
 }
 
@@ -52,13 +53,25 @@ export async function loadVia(route: Route, track: Found): Promise<{ encoded: st
     if (!r.encoded) throw new Error(r.error ?? 'unreadable file');
     return { encoded: r.encoded, file };
   }
-  const address = route === 'direct' ? await directAudioUrl(track.url) : track.url;
-  await assertPublicUrl(address);
-  const r = await loadEncoded(address);
-  if (!r.encoded) {
-    if (route === 'direct') forgetDirect(track.url);
-    throw new Error(r.error ?? 'nothing loaded');
+  // Read by Lavalink when the link was given: nothing more to load.
+  if (route === 'lavalink' && track.encoded) return { encoded: track.encoded };
+  if (route === 'direct') {
+    // YouTube now and then refuses an address it has just handed out (HTTP 403): a
+    // fresh one usually goes through, and costs less than falling back on a download.
+    let error = 'nothing loaded';
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const address = await directAudioUrl(track.url);
+      await assertPublicUrl(address);
+      const r = await loadEncoded(address);
+      if (r.encoded) return { encoded: r.encoded };
+      forgetDirect(track.url);
+      error = r.error ?? error;
+    }
+    throw new Error(error);
   }
+  await assertPublicUrl(track.url);
+  const r = await loadEncoded(track.url);
+  if (!r.encoded) throw new Error(r.error ?? 'nothing loaded');
   return { encoded: r.encoded };
 }
 
@@ -113,6 +126,10 @@ export class GuildMusic {
   private lastEncoded: string | null = null;
   private routes: Route[] = [];
   private routeIndex = 0;
+  /** Where a track that broke while playing is taken up again, in milliseconds (0: from the start). */
+  private resumeAt = 0;
+  /** Whether the current track already had its second try at a stream address. */
+  private retriedDirect = false;
   private announced = false;
   /** The next track, already loaded while the current one plays. */
   private prepared: { track: Track; route: Route; encoded: string } | null = null;
@@ -205,8 +222,19 @@ export class GuildMusic {
     const track = this.current;
     const failed = this.routes[this.routeIndex];
     log.warn('music', `${this.guild.name}: ${track.title} failed via ${failed}: ${message}`);
-    if (failed === 'direct') forgetDirect(track.url);
+    // Whatever plays it next picks up where it broke, not from the start (a few seconds in, there is nothing to pick up).
+    const at = this.player?.position ?? 0;
+    this.resumeAt = !track.live && at > 5000 ? at : 0;
     this.playing = null; // the end event of the broken track must not advance the queue
+    if (failed === 'direct') {
+      forgetDirect(track.url);
+      // A stream address can go stale in the middle of a track: a fresh one gets one try before the other routes.
+      if (!this.retriedDirect) {
+        this.retriedDirect = true;
+        void this.start(track, new Error(message));
+        return;
+      }
+    }
     this.routeIndex++;
     void this.start(track, new Error(message));
   }
@@ -224,6 +252,8 @@ export class GuildMusic {
       }
     }
     this.playing = null;
+    this.resumeAt = 0;
+    this.retriedDirect = false;
     this.skipVotes.clear();
     this.stopVotes.clear();
 
@@ -274,7 +304,12 @@ export class GuildMusic {
       const play = ++this.plays;
       this.playing = play;
       this.lastEncoded = encoded;
-      await this.player.play({ track: { encoded, requester: track.requesterId, userData: { [PLAY_TAG]: play } }, volume: this.volume });
+      await this.player.play({
+        track: { encoded, requester: track.requesterId, userData: { [PLAY_TAG]: play } },
+        volume: this.volume,
+        ...(this.resumeAt ? { position: this.resumeAt } : {}),
+      });
+      this.resumeAt = 0;
       if (!this.announced) {
         this.announced = true;
         this.hooks.onTrackStart(this);

@@ -164,6 +164,14 @@ const original = { title: 'One More Time', author: 'Daft Punk' };
 const remix = { title: 'One More Time (Remix)', author: 'Daft Punk' };
 assert.ok(matchScore('daft punk one more time', original, 1) > matchScore('daft punk one more time', remix, 0));
 assert.ok(matchScore('one more time remix', remix, 1) > matchScore('one more time remix', original, 0));
+// The artist asked for, in a radio edit, rather than the same title by someone else.
+const radioEdit = { title: 'Alors on danse (Radio Edit)', author: 'Stromae' };
+const cover = { title: 'Alors On Danse', author: 'Te Pai' };
+assert.ok(matchScore('stromae alors on danse', radioEdit, 3) > matchScore('stromae alors on danse', cover, 0));
+assert.ok(matchScore('stromae alors on danse', radioEdit, 3) > matchScore('stromae alors on danse', { title: 'Alors On Danse (Made Popular By Stromae)', author: 'Party Tyme Karaoke' }, 0));
+// A word still being typed counts by its beginning, and an artist's own songs come before the ones they feature on.
+assert.ok(matchScore('daft pu', original, 2) > matchScore('daft pu', { title: 'Daft', author: 'Pentatonix' }, 0));
+assert.ok(matchScore('daft pu', original, 3) > matchScore('daft pu', { title: 'Starboy (feat. Daft Punk)', author: 'The Weeknd' }, 0));
 console.log('search ranking OK');
 
 // A track's link stays one link, whatever characters its address holds.
@@ -234,10 +242,13 @@ const fakePlayer = () => ({
   paused: false,
   position: 0,
   played: [] as string[],
+  /** Where each play was asked to start, in milliseconds (undefined: from the beginning). */
+  startedAt: [] as (number | undefined)[],
   /** The number Ditto gave the play now on, as Lavalink would hand it back. */
   on: 0,
-  async play(o: { track: { encoded: string; userData: { ditto: number } } }) {
+  async play(o: { track: { encoded: string; userData: { ditto: number } }; position?: number }) {
     this.played.push(o.track.encoded);
+    this.startedAt.push(o.position);
     this.on = o.track.userData.ditto;
   },
   async stopPlaying() {},
@@ -345,6 +356,99 @@ for (const replacement of [song('B'), clip('B')]) {
   assert.equal((m as any).routeIndex, 0, 'its routes are untouched too');
   m.destroy();
 }
+{
+  // A track that breaks while playing is taken up where it broke. A YouTube one first
+  // gets a fresh stream address, once, before the other routes are tried.
+  const asked: string[] = [];
+  const { m, events, lavalinkPlayer } = player(async (route) => (asked.push(route), { encoded: `enc:${route}` }));
+  const youtube = { ...track(0), title: 'Y' };
+  await m.enqueue([youtube]);
+  lavalinkPlayer.position = 42_000;
+  m.onFailed(lavalinkPlayer.on, 'HTTP 403');
+  await tick();
+  m.onFailed(lavalinkPlayer.on, 'HTTP 403');
+  await tick();
+  assert.deepEqual(asked, ['direct', 'direct', 'lavalink']);
+  assert.deepEqual(lavalinkPlayer.startedAt, [undefined, 42_000, 42_000]);
+  assert.deepEqual(events, ['start:Y'], 'the player message is not posted again');
+  // Broken in its first seconds, it simply starts again.
+  lavalinkPlayer.position = 2000;
+  m.onFailed(lavalinkPlayer.on, 'HTTP 403');
+  await tick();
+  assert.deepEqual(asked, ['direct', 'direct', 'lavalink', 'download']);
+  assert.equal(lavalinkPlayer.startedAt.at(-1), undefined);
+  m.destroy();
+}
+{
+  // What Lavalink read itself when the link was given plays through Lavalink first, YouTube or not.
+  const { routesFor } = await import('../features/music/player.js');
+  assert.deepEqual(routesFor(track(1)), ['direct', 'lavalink', 'download']);
+  assert.deepEqual(routesFor({ ...track(1), encoded: 'x' }), ['lavalink', 'direct', 'download']);
+  assert.deepEqual(routesFor(song('S')), ['lavalink', 'direct', 'download']);
+  assert.deepEqual(routesFor(clip('C')), ['download']);
+  assert.deepEqual(routesFor({ ...song('L'), live: true }), ['lavalink', 'direct']);
+}
 console.log('music player OK');
+
+// ---------- What /play is given ----------
+
+const { linkIn, linkError, youtubeRef, youtubeWants, isPrivateAddress, rememberSuggestion, pickValue, resolveInput } = await import('../features/music/search.js');
+// A link is found inside < >, or next to a few words; anything else is a search.
+assert.equal(linkIn('daft punk around the world'), null);
+assert.equal(linkIn('<https://youtu.be/dQw4w9WgXcQ>'), 'https://youtu.be/dQw4w9WgXcQ');
+assert.equal(linkIn('regarde https://youtu.be/dQw4w9WgXcQ !'), 'https://youtu.be/dQw4w9WgXcQ');
+assert.equal(linkIn('https://youtu.be/dQw4w9WgXcQ.'), 'https://youtu.be/dQw4w9WgXcQ');
+
+// A YouTube link names a track, a playlist, or both. A mix, a radio or someone's own
+// list next to a video is not a playlist to queue: the video is what was shared.
+const wants = (url: string) => {
+  const ref = youtubeRef(url);
+  return ref && [ref.video, youtubeWants(ref)];
+};
+const V = 'dQw4w9WgXcQ';
+const PL = 'PLFgquLnL59alCl_2TQvOiD5Vgm1hCaGSI';
+assert.deepEqual(wants(`https://www.youtube.com/watch?v=${V}`), [V, 'track']);
+assert.deepEqual(wants(`https://youtu.be/${V}?si=AbCd`), [V, 'track']);
+assert.deepEqual(wants(`https://m.youtube.com/watch?v=${V}&feature=shared`), [V, 'track']);
+assert.deepEqual(wants(`https://www.youtube.com/shorts/${V}`), [V, 'track']);
+assert.deepEqual(wants(`https://www.youtube.com/live/${V}?si=x`), [V, 'track']);
+assert.deepEqual(wants(`https://www.youtube.com/watch?v=${V}&list=RD${V}&start_radio=1`), [V, 'track']);
+assert.deepEqual(wants(`https://music.youtube.com/watch?v=${V}&list=RDAMVM${V}`), [V, 'track']);
+for (const own of ['RDMM', 'LL', 'WL', 'LM']) assert.deepEqual(wants(`https://www.youtube.com/watch?v=${V}&list=${own}&index=2`), [V, 'track']);
+assert.deepEqual(wants(`https://www.youtube.com/watch?v=${V}&list=${PL}`), [V, 'both']);
+assert.deepEqual(wants(`https://www.youtube.com/playlist?list=${PL}`), [null, 'playlist']);
+assert.deepEqual(wants('https://music.youtube.com/playlist?list=RDCLAK5uy_kmPRjHDECIcuVwnKsx2Ng7fyNgFKWNJFs'), [null, 'playlist']);
+assert.deepEqual(wants('https://www.youtube.com/@RickAstleyYT'), [null, null]);
+assert.equal(youtubeRef('https://soundcloud.com/forss/flickermood'), null);
+assert.equal(youtubeRef('not a link'), null);
+
+// What went wrong with a link is said in words that tell what to do about it.
+assert.match(linkError('yt-dlp timed out after 25 s').message, /too long/);
+assert.match(linkError('ERROR: [youtube] x: Sign in to confirm you’re not a bot').message, /turning this server away/);
+assert.match(linkError('ERROR: [youtube] x: Private video. Sign in if you have been granted access').message, /needs an account/);
+assert.match(linkError('ERROR: [vimeo] 1: The web client only works when logged-in').message, /needs an account/);
+assert.match(linkError('ERROR: [youtube] x: This video is unavailable').message, /is gone/);
+assert.match(linkError('ERROR: [youtube:tab] x: YouTube said: The playlist does not exist.').message, /is gone/);
+assert.match(linkError('ERROR: [twitch:stream] x: The channel is not currently live').message, /not live/);
+assert.match(linkError('ERROR: Unsupported URL: https://example.com/').message, /nothing to play/);
+assert.equal(linkError('something nobody has seen before').message, 'That link could not be played.');
+
+// Through NAT64 (hosts with IPv6 only), a site is as public or as private as its IPv4 address.
+assert.equal(isPrivateAddress('64:ff9b::5db8:d822'), false);
+assert.equal(isPrivateAddress('64:ff9b::7f00:1'), true);
+assert.equal(isPrivateAddress('64:ff9b::192.168.1.1'), true);
+
+// A suggestion that is picked plays as it was suggested, without another search.
+const suggested = { ...song('Suggested'), url: 'https://music.youtube.com/watch?v=abcdefghijk', source: 'ytmusic' as const };
+rememberSuggestion(suggested);
+assert.equal(pickValue(suggested), 'ytm:abcdefghijk');
+const pickedTrack = (await resolveInput('ytm:abcdefghijk')).tracks[0];
+assert.equal(pickedTrack.title, 'Suggested');
+assert.notEqual(pickedTrack, suggested, 'each /play gets its own copy');
+const { suggestionName } = await import('../features/music/index.js');
+assert.equal(suggestionName({ title: 'Song', author: 'Artist', duration: 238 }), 'Song — Artist (3:58)');
+assert.equal(suggestionName({ title: 'Song', author: '', duration: null }), 'Song');
+assert.equal(suggestionName({ title: 'x'.repeat(200), author: 'Artist', duration: 10 }).length, 100);
+console.log('/play input OK');
 
 process.exit(0);

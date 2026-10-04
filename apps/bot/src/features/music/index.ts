@@ -16,11 +16,10 @@ import { COLOR, embed, ok, replyError, V2 } from '../../core/ui.js';
 import { initEngine, lavalink } from './engine.js';
 import { cleanTitle, findLyrics } from './lyrics.js';
 import { GuildMusic, warm, type FilterName, type LoopMode, type Track } from './player.js';
-import { resolveInput, UserError } from './search.js';
+import { linkIn, MAX_TRACKS, pickValue, resolveInput, suggest, UserError, type Found } from './search.js';
 import { ensureYtDlp, sweepAudioCache } from './tools.js';
 import { FILTERS, formatTime, idleView, playerView, queueView, trackLine } from './views.js';
 
-const MAX_PLAYLIST = 200;
 /** How often the player message moves its progress bar. */
 const REFRESH_MS = 10_000;
 const players = new Map<string, GuildMusic>();
@@ -144,7 +143,7 @@ async function playIn(
   let playlist: string | undefined;
   try {
     const result = await resolveInput(query);
-    tracks = result.tracks.slice(0, MAX_PLAYLIST).map((t) => ({ ...t, requesterId }));
+    tracks = result.tracks.slice(0, MAX_TRACKS).map((t) => ({ ...t, requesterId }));
     playlist = result.playlist;
     if (!tracks.length) throw new UserError('Nothing found for that search.');
   } catch (err) {
@@ -164,14 +163,55 @@ async function playIn(
   return { music, tracks, position, playlist };
 }
 
+/** How long the typing has to pause before the first suggestion is got ready. */
+const WARM_AFTER_MS = 1000;
+const warmTimers = new Map<string, NodeJS.Timeout>();
+
+/**
+ * Once the typing pauses on a list of suggestions, the first one — the closest match,
+ * and the one sent as is if nothing is picked — has its stream looked up ahead of
+ * time: picked a moment later, it starts at once instead of after the lookup.
+ */
+function warmAhead(userId: string, first: Found | undefined) {
+  clearTimeout(warmTimers.get(userId));
+  warmTimers.delete(userId);
+  if (!first) return;
+  const timer = setTimeout(() => {
+    warmTimers.delete(userId);
+    warm(first);
+  }, WARM_AFTER_MS);
+  warmTimers.set(userId, timer.unref());
+}
+
+/** One line of the suggestion list: « Title — Artist (3:58) », within Discord's 100 characters. */
+export function suggestionName(found: Pick<Found, 'title' | 'author' | 'duration'>) {
+  const name = `${found.title}${found.author ? ` — ${found.author}` : ''}${found.duration ? ` (${formatTime(found.duration)})` : ''}`;
+  return name.length > 100 ? `${name.slice(0, 99)}…` : name;
+}
+
 const play: Command = {
   data: new SlashCommandBuilder()
     .setName('play')
     .setDescription('Play a song, a link or a playlist')
     .addStringOption((o) =>
-      o.setName('query').setDescription('Song name or link (YouTube, Spotify, SoundCloud, Deezer, TikTok…)').setRequired(true).setMaxLength(300)
+      o
+        .setName('query')
+        .setDescription('Song name — pick one of the suggestions — or a link (YouTube, Spotify, SoundCloud, Deezer, TikTok…)')
+        .setRequired(true)
+        .setMaxLength(300)
+        .setAutocomplete(true)
     )
     .addBooleanOption((o) => o.setName('next').setDescription('Play it right after the current track')),
+
+  /** Songs suggested as the name is typed. Sending the words without picking one plays the best match. */
+  async autocomplete(i) {
+    const typed = i.options.getFocused().trim();
+    // Nothing to suggest for a letter or two, or for a link.
+    const hits = typed.length < 2 || linkIn(typed) ? [] : await suggest(typed).catch(() => []);
+    warmAhead(i.user.id, hits[0]);
+    // Too late to answer (three seconds, or more was typed since): nothing to do about it.
+    await i.respond(hits.map((h) => ({ name: suggestionName(h), value: pickValue(h) }))).catch(() => {});
+  },
 
   async run(i) {
     const channel = i.member.voice.channel;

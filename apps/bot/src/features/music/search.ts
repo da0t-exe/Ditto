@@ -1,6 +1,11 @@
 import dns from 'node:dns/promises';
 import net from 'node:net';
-import { runYtDlp } from './tools.js';
+import { log } from '../../core/log.js';
+import { loadTracks, type LavalinkTrack } from './lavalink.js';
+import { rememberDirect, runYtDlp } from './tools.js';
+
+/** Tracks taken from one album or playlist, at most. */
+export const MAX_TRACKS = 200;
 
 export type Source =
   | 'youtube'
@@ -30,6 +35,8 @@ export interface Found {
   /** Page shown in the "now playing" message. */
   link: string;
   live?: boolean;
+  /** Lavalink's own track, when Lavalink read the link: playing it needs no second load. */
+  encoded?: string;
 }
 
 /** An error whose message can be shown as is. */
@@ -145,7 +152,7 @@ export async function searchMusic(query: string, limit = 6, timeoutMs = 4000): P
   return out.slice(0, limit);
 }
 
-// ---------- yt-dlp metadata ----------
+// ---------- Reading a link ----------
 
 function fromInfo(info: any, fallbackUrl: string): Found {
   const url = info.webpage_url ?? info.original_url ?? info.url ?? fallbackUrl;
@@ -161,20 +168,199 @@ function fromInfo(info: any, fallbackUrl: string): Found {
   };
 }
 
-async function ytdlpResolve(url: string): Promise<{ tracks: Found[]; playlist?: string }> {
-  const info = JSON.parse(await runYtDlp(['-J', '--flat-playlist', url]));
+const isYoutubeUrl = (url: string) => ['youtube', 'ytmusic'].includes(sourceOf(url));
+
+/** « https://soundcloud.com/forss/city-ports » → « city ports »; « …/Song-1.mp3 » → « Song 1 ». */
+function nameFromAddress(url: string) {
+  try {
+    const last = decodeURIComponent(new URL(url).pathname.split('/').filter(Boolean).pop() ?? '');
+    return last.replace(/\.\w{2,5}$/, '').replace(/[-_]+/g, ' ').trim();
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * A link read by yt-dlp. `list` says what to do with a playlist: take its tracks (their
+ * titles only, which is quick), or leave it aside and read the one track the link names.
+ *
+ * A single track comes with its stream address in the same call, so that a YouTube
+ * link is ready to play as soon as it is read, without a second lookup.
+ */
+async function ytdlpRead(url: string, list: boolean): Promise<{ tracks: Found[]; playlist?: string }> {
+  const scope = list ? ['--flat-playlist', '--playlist-end', String(MAX_TRACKS)] : ['--no-playlist'];
+  const info = JSON.parse(await runYtDlp(['-J', '-f', 'bestaudio/best', ...scope, url], list ? 40_000 : 25_000));
+  if (!info) throw new Error('yt-dlp found nothing there');
   if (info._type === 'playlist' && Array.isArray(info.entries)) {
     const tracks = info.entries
       .filter((e: any) => e && (e.url || e.id))
       .map((e: any) => {
         const entryUrl = e.url?.startsWith('http') ? e.url : e.ie_key === 'Youtube' || /^[\w-]{11}$/.test(e.id) ? `https://www.youtube.com/watch?v=${e.id}` : e.url;
-        return { ...fromInfo(e, entryUrl), url: entryUrl, link: entryUrl, source: sourceOf(entryUrl) };
+        const found = { ...fromInfo(e, entryUrl), url: entryUrl, link: entryUrl, source: sourceOf(entryUrl) };
+        // Some sites list their tracks without naming them: the end of the address reads better than the whole of it.
+        if (!e.track && !e.title) found.title = nameFromAddress(entryUrl) || found.title;
+        return found;
       })
       // Entries are read from the page: only web addresses are kept.
-      .filter((t: Found) => /^https?:\/\//i.test(t.url));
+      .filter((t: Found) => /^https?:\/\//i.test(t.url))
+      .slice(0, MAX_TRACKS);
     return { tracks, playlist: info.title ?? undefined };
   }
-  return { tracks: [fromInfo(info, url)] };
+  const found = fromInfo(info, url);
+  const stream = info.url ?? info.requested_downloads?.[0]?.url;
+  // YouTube's addresses say when they expire, so they can be kept until then.
+  if (typeof stream === 'string' && /^https?:\/\//i.test(stream) && isYoutubeUrl(found.url)) rememberDirect(found.url, stream);
+  return { tracks: [found] };
+}
+
+const NAMELESS = /^unknown (title|artist)$/i;
+
+function fromLavalink(t: LavalinkTrack, fallbackUrl: string): Found {
+  const url = t.info.uri && /^https?:\/\//i.test(t.info.uri) ? t.info.uri : fallbackUrl;
+  return {
+    url,
+    // A plain media file carries no title: its file name stands in.
+    title: !t.info.title || NAMELESS.test(t.info.title) ? nameFromAddress(url) || url : t.info.title,
+    author: !t.info.author || NAMELESS.test(t.info.author) ? '' : t.info.author,
+    duration: t.info.isStream || !t.info.length ? null : Math.round(t.info.length / 1000),
+    thumbnail: t.info.artworkUrl ?? null,
+    source: sourceOf(url),
+    link: url,
+    live: t.info.isStream,
+    encoded: t.encoded,
+  };
+}
+
+/**
+ * The same link read by Lavalink, which knows SoundCloud, Bandcamp, Twitch, Vimeo and
+ * plain media files by itself, and YouTube through its plugin. Null without a Lavalink
+ * to ask.
+ */
+async function lavalinkRead(url: string): Promise<{ tracks: Found[]; playlist?: string } | null> {
+  const r = await loadTracks(url, 12_000);
+  if (!r) return null;
+  if (r.loadType === 'track') return { tracks: [fromLavalink(r.data, url)] };
+  if (r.loadType === 'playlist') {
+    return { tracks: r.data.tracks.slice(0, MAX_TRACKS).map((t) => fromLavalink(t, url)), playlist: r.data.info?.name || undefined };
+  }
+  if (r.loadType === 'error') throw new Error(r.data?.message ?? 'Lavalink could not read it');
+  throw new Error('Lavalink found nothing there');
+}
+
+/** Sites and files Lavalink reads by itself, quicker than yt-dlp does. */
+function lavalinkReads(url: string) {
+  const u = new URL(url);
+  return (
+    /(^|\.)(soundcloud\.com|bandcamp\.com|vimeo\.com|twitch\.tv)$/.test(u.hostname) ||
+    /\.(mp3|m4a|aac|ogg|oga|opus|flac|wav|webm|mp4|m3u8?|pls)$/i.test(u.pathname)
+  );
+}
+
+/**
+ * Any other link: yt-dlp and Lavalink each get a try, the quicker one for that site
+ * first, so that one of them failing is not the end of it.
+ */
+async function readLink(url: string): Promise<{ tracks: Found[]; playlist?: string }> {
+  const errors: { ytdlp?: Error; lavalink?: Error } = {};
+  const readers = {
+    ytdlp: () => ytdlpRead(url, true),
+    lavalink: () => lavalinkRead(url),
+  };
+  for (const name of lavalinkReads(url) ? (['lavalink', 'ytdlp'] as const) : (['ytdlp', 'lavalink'] as const)) {
+    try {
+      const result = await readers[name]();
+      if (result?.tracks.length) return result;
+    } catch (err) {
+      errors[name] = err as Error;
+    }
+  }
+  // yt-dlp says more about what went wrong.
+  throw errors.ytdlp ?? errors.lavalink ?? new Error('nothing to play there');
+}
+
+// ---------- YouTube links ----------
+
+/** The video and the playlist a YouTube address names, or null when the address is not YouTube's. */
+export function youtubeRef(url: string): { video: string | null; list: string | null } | null {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return null;
+  }
+  const host = u.hostname.replace(/^(www|m|music)\./, '');
+  let video: string | null;
+  if (host === 'youtu.be') video = u.pathname.split('/')[1] ?? null;
+  else if (host === 'youtube.com' || host === 'youtube-nocookie.com') {
+    video = /^\/(?:shorts|embed|live|v)\/([\w-]{11})/.exec(u.pathname)?.[1] ?? (u.pathname === '/watch' ? u.searchParams.get('v') : null);
+  } else return null;
+  const list = u.searchParams.get('list');
+  return { video: video && /^[\w-]{11}$/.test(video) ? video : null, list: list && /^[\w-]{2,64}$/.test(list) ? list : null };
+}
+
+/**
+ * Lists that come with a video without being a playlist to queue: the mixes and radios
+ * YouTube builds around what is playing (hundreds of tracks, slow to read, and not
+ * what someone sharing a song means), and the lists only their owner can open (liked
+ * videos, watch later).
+ */
+const NOT_A_PLAYLIST = /^(RD|UL|LL$|WL$|LM$)/;
+
+/** What a YouTube link asks for: a track, a playlist, or both (a playlist opened on one of its videos). */
+export function youtubeWants(ref: { video: string | null; list: string | null }): 'track' | 'playlist' | 'both' | null {
+  if (ref.video && (!ref.list || NOT_A_PLAYLIST.test(ref.list))) return 'track';
+  if (ref.video && ref.list) return 'both';
+  return ref.list ? 'playlist' : null;
+}
+
+/** YouTube's embed service names a video even when nothing else gets through. */
+async function oembed(watch: string): Promise<Found | null> {
+  const res = await fetch(`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(watch)}`, { signal: AbortSignal.timeout(5000) });
+  if (!res.ok) return null;
+  const j: any = await res.json();
+  if (!j?.title) return null;
+  return { url: watch, title: j.title, author: j.author_name ?? '', duration: null, thumbnail: j.thumbnail_url ?? null, source: sourceOf(watch), link: watch };
+}
+
+/** Answers after which asking another way is pointless: the video is gone, or closed to everyone. */
+const GONE = /private video|video unavailable|video is unavailable|has been removed|does not exist|been terminated/i;
+
+async function youtubeVideo(watch: string): Promise<Found> {
+  let reason: Error;
+  try {
+    return (await ytdlpRead(watch, false)).tracks[0];
+  } catch (err) {
+    reason = err as Error;
+  }
+  if (GONE.test(reason.message)) throw reason;
+  // YouTube may be refusing yt-dlp from this server just now. Lavalink's plugin asks it
+  // another way; failing that, the video's name is enough to queue it, and every route
+  // gets its chance when it plays.
+  log.warn('music', `yt-dlp could not read ${watch} (${reason.message}): trying another way`);
+  const other = (await lavalinkRead(watch).catch(() => null))?.tracks[0] ?? (await oembed(watch).catch(() => null));
+  if (!other) throw reason;
+  return other;
+}
+
+async function youtube(url: string, ref: { video: string | null; list: string | null }): Promise<{ tracks: Found[]; playlist?: string }> {
+  const site = /(^|\.)music\.youtube\.com$/.test(new URL(url).hostname) ? 'music' : 'www';
+  const watch = ref.video ? `https://${site}.youtube.com/watch?v=${ref.video}` : null;
+  const wants = youtubeWants(ref);
+  if (wants === 'playlist' || wants === 'both') {
+    const listUrl = `https://www.youtube.com/playlist?list=${ref.list}`;
+    try {
+      const result = await readLink(listUrl);
+      // Opened on one of its videos, the playlist starts there.
+      const at = result.tracks.findIndex((t) => youtubeRef(t.url)?.video === ref.video);
+      if (at > 0) result.tracks.push(...result.tracks.splice(0, at));
+      return result;
+    } catch (err) {
+      // The playlist cannot be read (private, deleted): the video itself still can.
+      if (!watch) throw err;
+    }
+  }
+  if (!watch) return readLink(url); // a channel, a search page…
+  return { tracks: [await youtubeVideo(watch)] };
 }
 
 async function youtubeSearch(query: string): Promise<Found | null> {
@@ -196,7 +382,10 @@ const normalise = (t: string) =>
     .trim();
 
 /** Versions people rarely mean unless they ask for them. */
-const VARIANTS = ['remix', 'live', 'cover', 'karaoke', 'instrumental', 'sped', 'slowed', 'reverb', 'nightcore', '8d', 'acoustic', 'mix', 'edit', 'version', 'lofi'];
+const VARIANTS = ['remix', 'live', 'cover', 'karaoke', 'instrumental', 'sped', 'slowed', 'reverb', 'nightcore', '8d', 'acoustic', 'mix', 'lofi'];
+/** The song itself, cut for the radio or issued again: barely behind the original, and ahead of someone else's cover. */
+const EDITIONS = ['edit', 'version', 'remaster', 'remastered'];
+const IMITATORS = ['karaoke', 'tribute', 'cover', 'covers'];
 
 /**
  * How well a result answers the search: the share of searched words found in its
@@ -207,18 +396,75 @@ export function matchScore(query: string, hit: Pick<Found, 'title' | 'author'>, 
   const wanted = normalise(query).split(' ').filter(Boolean);
   const words = new Set(normalise(`${hit.title} ${hit.author}`).split(' '));
   const title = new Set(normalise(hit.title).split(' '));
-  let score = wanted.length ? wanted.filter((w) => words.has(w)).length / wanted.length : 0;
+  // The last word may still be being typed: the start of a word is enough for it.
+  const found = (w: string, k: number) => words.has(w) || (k === wanted.length - 1 && [...words].some((x) => x.startsWith(w)));
+  let score = wanted.length ? wanted.filter(found).length / wanted.length : 0;
   for (const v of VARIANTS) if (title.has(v) && !wanted.includes(v)) score -= 0.3;
+  for (const v of EDITIONS) if (title.has(v) && !wanted.includes(v)) score -= 0.1;
+  const artist = normalise(hit.author).split(' ');
+  // Karaoke and tribute acts say so in their name rather than in the title.
+  if (artist.some((w) => IMITATORS.includes(w) && !wanted.includes(w))) score -= 0.3;
+  // An artist's name alone: their own songs come before the ones they only feature on.
+  if (wanted.length && wanted.every((w, k) => artist.includes(w) || (k === wanted.length - 1 && artist.some((x) => x.startsWith(w))))) score += 0.2;
   return score - rank * 0.04;
+}
+
+/** Results in the order they answer the search, the closest first. */
+const ranked = (query: string, hits: Found[]) =>
+  hits
+    .map((h, k) => ({ h, score: matchScore(query, h, k) }))
+    .sort((a, b) => b.score - a.score)
+    .map((x) => x.h);
+
+// ---------- Suggestions while typing ----------
+// /play suggests songs as the name is typed. What was suggested is remembered for a
+// while: picking a suggestion plays it without searching again, and so does sending
+// the same words without picking one.
+
+const SUGGESTIONS = 10;
+const SEARCH_TTL = 60_000;
+const PICK_TTL = 10 * 60_000;
+const searches = new Map<string, { hits: Found[]; at: number }>();
+const picked = new Map<string, { found: Found; at: number }>();
+const PICK = /^ytm:([\w-]{11})$/;
+const videoOf = (found: Found) => new URL(found.url).searchParams.get('v');
+
+/** What a suggestion sends back when it is picked. */
+export const pickValue = (found: Found) => `ytm:${videoOf(found)}`;
+
+/** Keeps a suggested song, so that picking it needs no lookup. */
+export function rememberSuggestion(found: Found) {
+  const id = videoOf(found);
+  if (id) picked.set(id, { found, at: Date.now() });
+}
+
+/** Songs for what has been typed so far, the closest match first. */
+export async function suggest(typed: string, timeoutMs = 2200): Promise<Found[]> {
+  const key = normalise(typed);
+  const now = Date.now();
+  let entry = searches.get(key);
+  if (!entry || now - entry.at > SEARCH_TTL) {
+    // The same song often comes back twice (single and album): once is enough in a list.
+    const seen = new Set<string>();
+    const hits = ranked(typed, await searchMusic(typed, 15, timeoutMs)).filter((h) => {
+      const line = `${normalise(h.title)}|${normalise(h.author)}|${h.duration}`;
+      return !seen.has(line) && !!seen.add(line);
+    });
+    entry = { hits: hits.slice(0, SUGGESTIONS), at: now };
+    for (const [k, v] of searches) if (now - v.at > SEARCH_TTL) searches.delete(k);
+    for (const [k, v] of picked) if (now - v.at > PICK_TTL) picked.delete(k);
+    searches.set(key, entry);
+  }
+  entry.hits.forEach(rememberSuggestion);
+  return entry.hits;
 }
 
 /** Best match for free text: YouTube Music songs first, plain YouTube as a fallback. */
 export async function findOne(query: string): Promise<Found | null> {
   try {
-    const hits = await searchMusic(query, 8);
-    if (hits.length) {
-      return hits.map((h, k) => ({ h, score: matchScore(query, h, k) })).sort((a, b) => b.score - a.score)[0].h;
-    }
+    // Sent as typed, without picking a suggestion: the first one is the best match.
+    const hits = await suggest(query, 4000);
+    if (hits.length) return { ...hits[0] };
   } catch {
     /* fall back below */
   }
@@ -245,18 +491,31 @@ for (const [address, prefix] of [
 }
 for (const [address, prefix] of [
   ['::', 127], // unspecified and loopback
-  ['64:ff9b::', 96], // NAT64: an IPv4 address in disguise
   ['fc00::', 7],
   ['fe80::', 10],
   ['ff00::', 8],
 ] as const) {
   PRIVATE.addSubnet(address, prefix, 'ipv6');
 }
+/** NAT64: how hosts with IPv6 only reach IPv4 sites. The IPv4 address sits in the last 32 bits. */
+const NAT64 = new net.BlockList();
+NAT64.addSubnet('64:ff9b::', 96, 'ipv6');
+
+/** The IPv4 address written in the last 32 bits of an IPv6 one (« 64:ff9b::7f00:1 » → « 127.0.0.1 »). */
+function embeddedIPv4(ip: string) {
+  const tail = ip.slice(ip.lastIndexOf(':') + 1);
+  if (net.isIPv4(tail)) return tail;
+  const groups = ip.split(':');
+  const [hi, lo] = [parseInt(groups.at(-2) || '0', 16), parseInt(groups.at(-1) || '0', 16)];
+  return [hi >> 8, hi & 255, lo >> 8, lo & 255].join('.');
+}
 
 /** IPv4 addresses written as IPv6 (« ::ffff:127.0.0.1 », which URLs turn into « ::ffff:7f00:1 ») are read as IPv4. */
-export function isPrivateAddress(ip: string) {
+export function isPrivateAddress(ip: string): boolean {
   if (net.isIPv4(ip)) return PRIVATE.check(ip, 'ipv4');
   if (!net.isIPv6(ip)) return true; // not an address at all
+  // Through NAT64, a public site is as public as its IPv4 address, and a private one as private.
+  if (NAT64.check(ip, 'ipv6')) return isPrivateAddress(embeddedIPv4(ip));
   return PRIVATE.check(ip, 'ipv6');
 }
 
@@ -269,13 +528,42 @@ export async function assertPublicUrl(url: string) {
   try {
     u = new URL(url);
   } catch {
-    throw new UserError('That link could not be played.');
+    throw new UserError('That does not look like a link.');
   }
   if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new UserError('Only web links can be played.');
   const host = u.hostname.replace(/^\[|\]$/g, '');
   const addresses = net.isIP(host) ? [host] : (await dns.lookup(host, { all: true }).catch(() => [])).map((a) => a.address);
-  if (!addresses.length) throw new UserError('That link could not be played.');
+  if (!addresses.length) throw new UserError(`I could not find **${host}** — check the link.`);
   if (addresses.some(isPrivateAddress)) throw new UserError('That link points to a private address.');
+}
+
+// ---------- What was typed ----------
+
+/**
+ * The link in what was typed, or null when it is a search. People wrap links in < >
+ * to keep Discord from previewing them, or leave a word next to them.
+ */
+export function linkIn(typed: string): string | null {
+  const m = /https?:\/\/[^\s<>]+/i.exec(typed);
+  return m ? m[0].replace(/[.,;!?]+$/, '') : null;
+}
+
+/** What to tell someone whose link could not be read, from what yt-dlp or Lavalink said about it. */
+export function linkError(reason: string): UserError {
+  const r = reason.toLowerCase();
+  const tell = (message: string) => new UserError(message);
+  if (/timed out|timeout|aborted/.test(r)) return tell('That link took too long to read — try again.');
+  if (/not a bot|too many requests|http error 429/.test(r)) return tell('YouTube is turning this server away right now — try again in a moment, or type the name of the song.');
+  if (/not currently live|is offline|not live/.test(r)) return tell('That channel is not live right now.');
+  if (/private|sign in|log ?in|logged-in|members-only|confirm your age|age-restricted|inappropriate|cookies/.test(r)) {
+    return tell('That link needs an account (private, age-restricted or members only): I cannot play it.');
+  }
+  if (/drm/.test(r)) return tell('That site protects its music: I cannot play it. Type the name of the song instead.');
+  if (/unavailable|does not exist|not exist|removed|deleted|terminated|not available|not found|http error 40[34]/.test(r)) {
+    return tell('Nothing plays at that link: the video or playlist is gone, or not available here.');
+  }
+  if (/unsupported url|not a valid url|no video|nothing to play|found nothing/.test(r)) return tell('I found nothing to play at that link.');
+  return tell('That link could not be played.');
 }
 
 // ---------- Streaming services ----------
@@ -399,38 +687,37 @@ async function deezerCollection(kind: string, id: string): Promise<{ tracks: Fou
   return { tracks, playlist: data.title };
 }
 
-/** Deezer share links (deezer.page.link) redirect to the real address. */
+/** Share links (spotify.link, link.deezer.com, deezer.page.link) redirect to the real address. */
 async function unshorten(url: string) {
   try {
-    const res = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(6000) });
+    const res = await fetch(url, { redirect: 'follow', headers: BROWSER, signal: AbortSignal.timeout(6000) });
     return res.url || url;
   } catch {
     return url;
   }
 }
 
+const SPOTIFY_ITEM = /spotify\.com\/(?:intl-[a-z]+\/)?(track|album|playlist)\//;
+const DEEZER_ITEM = /deezer\.com\/(?:[a-z]{2}\/)?(track|album|playlist)\/(\d+)/;
+
 // ---------- Entry point ----------
 
-export async function resolveInput(input: string): Promise<{ tracks: Found[]; playlist?: string }> {
-  const text = input.trim();
-
-  if (!/^https?:\/\//i.test(text)) {
-    const found = await findOne(text);
-    if (!found) throw new UserError('Nothing found for that search.');
-    return { tracks: [found] };
-  }
-  await assertPublicUrl(text);
-
-  let url = text;
+/** What a link leads to, whichever site it is from. */
+async function readAny(link: string): Promise<{ tracks: Found[]; playlist?: string }> {
+  let url = link;
   let source = sourceOf(url);
-  if (source === 'deezer' && /page\.link/.test(url)) {
+  // A share link says nothing by itself: follow it to the track or the playlist it stands for.
+  if ((source === 'deezer' && !DEEZER_ITEM.test(url)) || (source === 'spotify' && !SPOTIFY_ITEM.test(url))) {
     url = await unshorten(url);
     await assertPublicUrl(url); // where the short link led is checked like any other link
     source = sourceOf(url);
   }
 
+  const ref = youtubeRef(url);
+  if (ref) return youtube(url, ref);
+
   if (source === 'deezer') {
-    const m = /deezer\.com\/(?:[a-z]{2}\/)?(track|album|playlist)\/(\d+)/.exec(url);
+    const m = DEEZER_ITEM.exec(url);
     if (!m) throw new UserError('That Deezer link could not be read.');
     if (m[1] !== 'track') return deezerCollection(m[1], m[2]);
     const t: any = await (await fetch(`https://api.deezer.com/track/${m[2]}`, { signal: AbortSignal.timeout(8000) })).json();
@@ -451,14 +738,39 @@ export async function resolveInput(input: string): Promise<{ tracks: Found[]; pl
   if (source === 'spotify') return spotify(url);
   if (source === 'apple') return apple(url);
   if (source === 'tidal') return tidal(url);
+  return readLink(url);
+}
 
+/** What /play was given, turned into tracks: a picked suggestion, a link, or words to search for. */
+export async function resolveInput(input: string): Promise<{ tracks: Found[]; playlist?: string }> {
+  const text = input.trim();
+
+  const pick = PICK.exec(text);
+  if (pick) {
+    const known = picked.get(pick[1]);
+    if (known) return { tracks: [{ ...known.found }] };
+    // Suggested too long ago to be remembered: read again.
+    return { tracks: [await youtubeVideo(`https://music.youtube.com/watch?v=${pick[1]}`)] };
+  }
+
+  const link = linkIn(text);
+  if (!link) {
+    const found = await findOne(text);
+    if (!found) throw new UserError('Nothing found for that search.');
+    return { tracks: [found] };
+  }
+
+  await assertPublicUrl(link);
   try {
-    const result = await ytdlpResolve(url);
-    if (!result.tracks.length) throw new Error('empty');
+    const result = await readAny(link);
+    if (!result.tracks.length) throw new Error('nothing to play there');
     return result;
   } catch (err) {
     if (err instanceof UserError) throw err;
-    throw new UserError('That link could not be played.');
+    // The reason goes to the console: the message shown only says what can be done about it.
+    const reason = (err as Error).message;
+    log.warn('music', `could not read ${link}: ${reason}`);
+    throw linkError(reason);
   }
 }
 
