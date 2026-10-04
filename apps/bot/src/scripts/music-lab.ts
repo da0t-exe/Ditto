@@ -16,13 +16,21 @@ const WebSocket = createRequire(import.meta.url)('ws');
 const CASES: [string, string][] = [
   ['YouTube (failed on the server)', 'https://www.youtube.com/watch?v=2hkJhCMQMfs'],
   ['YouTube', 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'],
+  // The shapes links really come in: shared from a mix or a radio, shortened, wrapped in < >.
+  ['YouTube, shared from a mix', 'https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=RDdQw4w9WgXcQ&start_radio=1'],
+  ['YouTube Music, with its radio', 'https://music.youtube.com/watch?v=lYBUbBu4W08&list=RDAMVMlYBUbBu4W08'],
+  ['youtu.be in < >', '<https://youtu.be/dQw4w9WgXcQ?si=AbCdEfGh123>'],
+  ['YouTube Shorts', 'https://www.youtube.com/shorts/jNQXAC9IVRw'],
+  ['YouTube playlist', 'https://www.youtube.com/playlist?list=PLFgquLnL59alCl_2TQvOiD5Vgm1hCaGSI'],
   ['Search → YouTube Music', 'daft punk around the world'],
   ['Search → YouTube Music', 'stromae alors on danse'],
   ['Spotify track', 'https://open.spotify.com/track/4PTG3Z6ehGkBFwjybzWkR8'],
   ['Deezer track', 'https://www.deezer.com/track/3135556'],
   ['Apple Music song', 'https://music.apple.com/us/album/never-gonna-give-you-up/1559523357?i=1559523359'],
   ['SoundCloud', 'https://soundcloud.com/forss/flickermood'],
+  ['SoundCloud set', 'https://soundcloud.com/forss/sets/soulhack'],
   ['Bandcamp', 'https://c418.bandcamp.com/track/sweden'],
+  ['Vimeo', 'https://vimeo.com/76979871'],
   ['TikTok', 'https://www.tiktok.com/@scout2015/video/6718335390845095173'],
   ['X', 'https://twitter.com/freethenipple/status/643211948184596480'],
   ['Twitch clip', 'https://clips.twitch.tv/FaintLightGullWholeWheat'],
@@ -81,6 +89,7 @@ for (const [label, input] of cases) {
     const { tracks } = await resolveInput(input);
     const track: Track = { ...tracks[0], requesterId: 'lab' };
     await ensurePlayable(track);
+    const read = ((Date.now() - t0) / 1000).toFixed(1);
     const tried: string[] = [];
     let worked: Route | null = null;
     for (const route of routesFor(track)) {
@@ -99,7 +108,8 @@ for (const [label, input] of cases) {
       }
     }
     await api(`/players/${guildId}`, 'DELETE');
-    line = `${worked ? '✅' : '❌'} ${label} — « ${track.title.slice(0, 50)} » (${((Date.now() - t0) / 1000).toFixed(1)}s)\n     ${tried.join('\n     ')}`;
+    const many = tracks.length > 1 ? `, ${tracks.length} tracks` : '';
+    line = `${worked ? '✅' : '❌'} ${label} — « ${track.title.slice(0, 50)} »${many} (read in ${read}s, ${((Date.now() - t0) / 1000).toFixed(1)}s in all)\n     ${tried.join('\n     ')}`;
   } catch (err) {
     line = `❌ ${label} — resolve failed: ${(err as Error).message.slice(0, 120)}`;
   }

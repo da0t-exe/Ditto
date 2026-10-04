@@ -4,12 +4,19 @@
  *   npx tsx src/scripts/music-check.ts
  */
 import { findLyrics } from '../features/music/lyrics.js';
-import { resolveInput, searchMusic } from '../features/music/search.js';
+import { resolveInput, searchMusic, suggest } from '../features/music/search.js';
 
 const show = (label: string, v: string) => console.log(label.padEnd(18), v);
 
 const hits = await searchMusic('daft punk one more time', 3);
 show('YT Music search', hits.map((h) => `${h.title} — ${h.author} (${h.duration}s)`).join(' | '));
+
+// What /play suggests while a name is being typed, and how long it takes.
+for (const typed of ['daft pu', 'stromae alors', 'never gonna give']) {
+  const t0 = Date.now();
+  const suggested = await suggest(typed);
+  show(`« ${typed} »`, `${Date.now() - t0} ms — ${suggested.slice(0, 3).map((h) => `${h.title} — ${h.author}`).join(' | ')}`);
+}
 
 const links: [string, string][] = [
   ['Spotify track', 'https://open.spotify.com/track/4PTG3Z6ehGkBFwjybzWkR8'],

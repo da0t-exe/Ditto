@@ -1,7 +1,7 @@
 import { Events, type Client } from 'discord.js';
 import { LavalinkManager, type Player } from 'lavalink-client';
 import { log } from '../../core/log.js';
-import { activeNode, startLavalink, type NodeConfig } from './lavalink.js';
+import { activeNode, loadTracks, startLavalink, type LoadResult, type NodeConfig } from './lavalink.js';
 import { UserError } from './search.js';
 
 /** Glue between Ditto's players and the Lavalink node. */
@@ -108,22 +108,16 @@ export function lavalink(): LavalinkManager {
 
 export type LavalinkPlayer = Player;
 
-interface LoadResult {
-  loadType: 'track' | 'playlist' | 'search' | 'empty' | 'error';
-  data: any;
-}
-
 /** Asks Lavalink to load an address (web page, direct media URL or local file) and returns the first track. */
 export async function loadEncoded(identifier: string): Promise<{ encoded: string | null; error: string | null }> {
-  const node = activeNode();
-  if (!node) throw new UserError('Music is still starting — try again in a minute.');
-  const scheme = node.secure ? 'https' : 'http';
-  const res = await fetch(`${scheme}://${node.host}:${node.port}/v4/loadtracks?identifier=${encodeURIComponent(identifier)}`, {
-    headers: { Authorization: node.password },
-    signal: AbortSignal.timeout(20_000),
-  });
-  if (!res.ok) return { encoded: null, error: `HTTP ${res.status}` };
-  const r = (await res.json()) as LoadResult;
+  if (!activeNode()) throw new UserError('Music is still starting — try again in a minute.');
+  let r: LoadResult | null;
+  try {
+    r = await loadTracks(identifier);
+  } catch (err) {
+    return { encoded: null, error: (err as Error).message };
+  }
+  if (!r) return { encoded: null, error: 'Lavalink is not running' };
   if (r.loadType === 'track') return { encoded: r.data.encoded, error: null };
   if (r.loadType === 'search') return { encoded: r.data[0]?.encoded ?? null, error: null };
   if (r.loadType === 'playlist') return { encoded: r.data.tracks?.[0]?.encoded ?? null, error: null };

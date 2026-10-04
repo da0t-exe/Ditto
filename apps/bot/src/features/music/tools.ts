@@ -110,7 +110,10 @@ export async function runYtDlp(args: string[], timeoutMs = 25_000): Promise<stri
     timeoutMs
   );
   if (r.code === 0) return r.out;
-  throw new Error(r.err.trim().split('\n').pop() || `yt-dlp exited with ${r.code}`);
+  // Stopped by the timer above: say so, rather than « exited with null ».
+  if (r.code === null) throw new Error(`yt-dlp timed out after ${Math.round(timeoutMs / 1000)} s`);
+  const lines = r.err.trim().split('\n').reverse();
+  throw new Error((lines.find((l) => l.startsWith('ERROR')) ?? lines[0])?.trim() || `yt-dlp exited with ${r.code}`);
 }
 
 // ---------- Direct audio addresses, cached ----------
@@ -143,6 +146,15 @@ export function directAudioUrl(page: string): Promise<string> {
   );
   if (direct.size > 500) for (const [k, v] of direct) if (v.expires < Date.now()) direct.delete(k);
   return url;
+}
+
+/** Keeps an address yt-dlp gave while reading a link: playing that link then needs no second lookup. */
+export function rememberDirect(page: string, url: string) {
+  try {
+    direct.set(page, { url: Promise.resolve(url), expires: expiryOf(url) });
+  } catch {
+    /* not an address worth keeping */
+  }
 }
 
 /** Forgets an address that stopped working, so the next try asks yt-dlp again. */
