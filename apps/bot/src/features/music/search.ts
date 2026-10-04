@@ -227,14 +227,37 @@ export async function findOne(query: string): Promise<Found | null> {
 
 // ---------- Links to private addresses ----------
 
-function isPrivateAddress(ip: string) {
-  if (net.isIPv4(ip)) {
-    const [a, b] = ip.split('.').map(Number);
-    return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
-  }
-  const v6 = ip.toLowerCase();
-  if (v6.startsWith('::ffff:')) return isPrivateAddress(v6.slice(7));
-  return v6 === '::1' || v6 === '::' || v6.startsWith('fc') || v6.startsWith('fd') || v6.startsWith('fe80');
+/** Everything that is not the public internet: the host itself, local networks, and reserved ranges. */
+const PRIVATE = new net.BlockList();
+for (const [address, prefix] of [
+  ['0.0.0.0', 8],
+  ['10.0.0.0', 8],
+  ['100.64.0.0', 10],
+  ['127.0.0.0', 8],
+  ['169.254.0.0', 16],
+  ['172.16.0.0', 12],
+  ['192.0.0.0', 24],
+  ['192.168.0.0', 16],
+  ['198.18.0.0', 15],
+  ['224.0.0.0', 3], // multicast, reserved and broadcast
+] as const) {
+  PRIVATE.addSubnet(address, prefix, 'ipv4');
+}
+for (const [address, prefix] of [
+  ['::', 127], // unspecified and loopback
+  ['64:ff9b::', 96], // NAT64: an IPv4 address in disguise
+  ['fc00::', 7],
+  ['fe80::', 10],
+  ['ff00::', 8],
+] as const) {
+  PRIVATE.addSubnet(address, prefix, 'ipv6');
+}
+
+/** IPv4 addresses written as IPv6 (« ::ffff:127.0.0.1 », which URLs turn into « ::ffff:7f00:1 ») are read as IPv4. */
+export function isPrivateAddress(ip: string) {
+  if (net.isIPv4(ip)) return PRIVATE.check(ip, 'ipv4');
+  if (!net.isIPv6(ip)) return true; // not an address at all
+  return PRIVATE.check(ip, 'ipv6');
 }
 
 /**
@@ -402,6 +425,7 @@ export async function resolveInput(input: string): Promise<{ tracks: Found[]; pl
   let source = sourceOf(url);
   if (source === 'deezer' && /page\.link/.test(url)) {
     url = await unshorten(url);
+    await assertPublicUrl(url); // where the short link led is checked like any other link
     source = sourceOf(url);
   }
 

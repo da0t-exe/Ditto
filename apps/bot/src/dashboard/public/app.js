@@ -114,6 +114,49 @@ function avatar(url, name, cls = 'avatar') {
   return url ? h('img', { class: cls, src: url, alt: '' }) : h('div', { class: cls }, initials(name || '?'));
 }
 
+/**
+ * The page is redrawn whenever something changes on the server. What is being typed
+ * or picked in a control marked data-keep survives it: call before the redraw, then
+ * call what it returns.
+ */
+function keepFields(root) {
+  const saved = new Map();
+  for (const el of root.querySelectorAll('[data-keep]')) {
+    let at = null;
+    try {
+      at = el.selectionStart ?? null;
+    } catch {
+      /* not a text field */
+    }
+    saved.set(el.dataset.keep, { value: el.value, checked: el.checked, focused: document.activeElement === el, at });
+  }
+  return () => {
+    for (const el of root.querySelectorAll('[data-keep]')) {
+      const s = saved.get(el.dataset.keep);
+      if (!s) continue;
+      if (el.type === 'checkbox') el.checked = s.checked;
+      else el.value = s.value;
+      if (!s.focused) continue;
+      el.focus();
+      try {
+        if (s.at !== null) el.setSelectionRange(s.at, s.at);
+      } catch {
+        /* not a text field */
+      }
+    }
+  };
+}
+
+function inviteButton() {
+  const url = state.me?.admin ? state.me.bot.invite : null;
+  if (!url) return null;
+  return h(
+    'div',
+    { style: 'margin-top:14px' },
+    h('a', { class: 'btn primary', style: 'text-decoration:none', href: url, target: '_blank', rel: 'noopener noreferrer' }, '➕ Add Ditto to a server')
+  );
+}
+
 // ---------- API ----------
 
 async function api(method, path, body) {
@@ -276,7 +319,7 @@ function renderShell() {
       'div',
       { class: 'side-footer' },
       me.user ? avatar(me.user.avatar, me.user.name) : h('div', { class: 'avatar' }, '🔑'),
-      h('div', { class: 'who' }, me.user ? me.user.name : 'Admin'),
+      h('div', { class: 'who' }, me.user ? me.user.name : me.admin ? 'Admin' : 'Staff'),
       h('button', {
         class: 'btn icon',
         title: 'Appearance',
@@ -327,13 +370,17 @@ function startLive() {
     if (document.hidden || !state.guild) return;
     try {
       const live = await api('GET', `/api/guilds/${state.guild.id}/live`);
-      const changed = JSON.stringify([live.music?.current?.title, live.music?.paused, live.music?.queueLength, live.logs.length, live.locks]) !==
-        JSON.stringify([state.guild.music?.current?.title, state.guild.music?.paused, state.guild.music?.queueLength, state.guild.logs.length, state.guild.locks.length]);
+      // What the player shows, the last log line and the locks: a redraw only when one of them moved.
+      const shown = (m, logs, locks) =>
+        JSON.stringify([m?.current?.title, m?.paused, m?.queueLength, m?.volume, m?.loop, m?.filter, logs.length, logs[logs.length - 1]?.at, locks]);
+      const changed = shown(live.music, live.logs, live.locks) !== shown(state.guild.music, state.guild.logs, state.guild.locks.length);
       state.guild.music = live.music;
       state.guild.logs = live.logs;
+      if (live.bot) Object.assign(state.me.bot, live.bot); // ping, uptime and « music ready » stay current
       if (changed && live.locks !== state.guild.locks.length) return reloadGuild();
-      if (changed && ['overview', 'music', 'logs'].includes(state.tab)) renderMain();
-      else updateProgress();
+      if (changed && ['overview', 'music', 'logs'].includes(state.tab)) return renderMain();
+      updateProgress();
+      updateChips();
     } catch {
       /* next time */
     }
@@ -353,25 +400,36 @@ function stopLive() {
   clearInterval(state.tick);
 }
 
+/** The bot's state, at the top right of every page. */
+function chips() {
+  const b = state.me.bot;
+  return [
+    // The ping is unknown (-1) until Discord has answered a first heartbeat.
+    h('span', { class: 'chip good' }, h('span', { class: 'dot' }), b.ping >= 0 ? `Online · ${b.ping} ms` : 'Online'),
+    h('span', { class: `chip ${b.music ? 'good' : 'bad'}` }, b.music ? '🎵 Music ready' : '🎵 Music starting'),
+    h('span', { class: 'chip' }, `⏱ ${uptime(b.uptime)}`),
+    h('span', { class: 'chip' }, `🖼 ${b.photos} captcha photos`),
+  ];
+}
+
+function updateChips() {
+  document.getElementById('chips')?.replaceChildren(...chips());
+}
+
 function renderMain() {
   const main = document.getElementById('main');
   if (!main) return;
   const g = state.guild;
-  if (!g) return main.replaceChildren(h('div', { class: 'empty' }, 'Pick a server.'));
-  const b = state.me.bot;
+  if (!g) {
+    const none = state.me && !state.me.guilds.length;
+    return main.replaceChildren(h('div', { class: 'empty' }, none ? 'Ditto is not in any Discord server yet.' : 'Pick a server.', none ? inviteButton() : null));
+  }
   const top = h(
     'div',
     { class: 'topbar' },
     avatar(g.icon, g.name),
     h('div', {}, h('h2', {}, g.name), h('div', { class: 'muted' }, `${g.members.toLocaleString()} members`)),
-    h(
-      'div',
-      { class: 'chips' },
-      h('span', { class: 'chip good' }, h('span', { class: 'dot' }), `Online · ${b.ping} ms`),
-      h('span', { class: `chip ${b.music ? 'good' : 'bad'}` }, b.music ? '🎵 Music ready' : '🎵 Music starting'),
-      h('span', { class: 'chip' }, `⏱ ${uptime(b.uptime)}`),
-      h('span', { class: 'chip' }, `🖼 ${b.photos} captcha photos`)
-    )
+    h('div', { class: 'chips', id: 'chips' }, chips())
   );
   const tabs = h(
     'div',
@@ -393,7 +451,9 @@ function renderMain() {
     )
   );
   const view = { overview, captcha, music, voice, settings, logs }[state.tab] || overview;
+  const restore = keepFields(main);
   main.replaceChildren(top, tabs, view(g));
+  restore();
 }
 
 // ---------- Discord text ----------
@@ -674,11 +734,16 @@ function updateProgress() {
 }
 
 function addForm(g, playing) {
-  const input = h('input', { class: 'input', placeholder: 'Song name or link — Ditto picks the best match', maxlength: 300, required: true });
-  const next = h('input', { type: 'checkbox' });
+  const input = h('input', { class: 'input', placeholder: 'Song name or link — Ditto picks the best match', maxlength: 300, required: true, 'data-keep': `query:${g.id}` });
+  const next = h('input', { type: 'checkbox', 'data-keep': `next:${g.id}` });
   const channel = playing
     ? null
-    : h('select', { class: 'input' }, h('option', { value: '' }, 'Voice channel…'), g.options.voiceChannels.map((c) => h('option', { value: c.id }, c.name)));
+    : h(
+        'select',
+        { class: 'input', 'data-keep': `channel:${g.id}` },
+        h('option', { value: '' }, 'Voice channel…'),
+        g.options.voiceChannels.map((c) => h('option', { value: c.id }, c.listeners ? `${c.name} · ${c.listeners} in voice` : c.name))
+      );
   return h(
     'form',
     {
@@ -734,7 +799,8 @@ function music(g) {
                   onclick: (e) => {
                     if (!seekable) return;
                     const r = e.currentTarget.getBoundingClientRect();
-                    musicDo('seek', { value: Math.floor(((e.clientX - r.left) / r.width) * t.duration) });
+                    const at = Math.floor(((e.clientX - r.left) / r.width) * t.duration);
+                    musicDo('seek', { value: Math.max(0, Math.min(t.duration - 1, at)) });
                   },
                 },
                 h('span', { id: 'progress-fill', style: `width:${t.duration ? Math.min(100, (m.position / t.duration) * 100) : 0}%` })
@@ -859,7 +925,7 @@ function voice(g) {
       'div',
       { class: 'card' },
       h('h3', {}, '🔊 Voice settings'),
-      field('Rooms', multi('rooms', o.voiceChannels, c.rooms), 'The first person in owns the room; it resets when it empties.'),
+      field('Rooms', multi('rooms', o.voiceChannels.filter((v) => !v.stage), c.rooms), 'The first person in owns the room; it resets when it empties.'),
       field('Log channel', single('logChannel', o.textChannels, c.logChannel)),
       h('div', { class: 'grid', style: 'gap:10px;margin-bottom:14px' }, toggleFeature('Voice log: joins, leaves and moves', 'voiceLog', c), toggleFeature('Move deafened members to AFK', 'autoAfk', c)),
       field('AFK after', choice('afkIdleMinutes', [5, 10, 15, 30, 60], c.afkIdleMinutes, (n) => `${n} minutes deafened`))
@@ -896,7 +962,7 @@ function settings(g) {
       { class: 'card' },
       h('h3', {}, '🔊 Voice & logs'),
       field('Log channel', single('logChannel', o.textChannels, c.logChannel)),
-      field('Rooms', multi('rooms', o.voiceChannels, c.rooms)),
+      field('Rooms', multi('rooms', o.voiceChannels.filter((v) => !v.stage), c.rooms)),
       h('div', { class: 'grid', style: 'gap:10px;margin-bottom:14px' }, toggleFeature('Voice log', 'voiceLog', c), toggleFeature('Auto AFK', 'autoAfk', c)),
       field('AFK after', choice('afkIdleMinutes', [5, 10, 15, 30, 60], c.afkIdleMinutes, (n) => `${n} minutes deafened`))
     ),

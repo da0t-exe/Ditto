@@ -30,6 +30,24 @@ export function logTo(guild: Guild, text: string) {
   if (!timers.has(guild.id)) timers.set(guild.id, setTimeout(() => flush(guild), FLUSH_MS));
 }
 
+const MESSAGE_MAX = 1900;
+
+/** Groups lines into messages Discord accepts (2000 characters); a line too long on its own is cut. */
+export function chunkLines(lines: string[], max = MESSAGE_MAX) {
+  const chunks: string[] = [];
+  let cur = '';
+  for (const line of lines) {
+    const l = line.length > max ? `${line.slice(0, max - 1)}…` : line;
+    if (cur && cur.length + l.length + 1 > max) {
+      chunks.push(cur);
+      cur = '';
+    }
+    cur += (cur ? '\n' : '') + l;
+  }
+  if (cur) chunks.push(cur);
+  return chunks;
+}
+
 async function flush(guild: Guild) {
   timers.delete(guild.id);
   const lines = queues.get(guild.id) ?? [];
@@ -37,18 +55,7 @@ async function flush(guild: Guild) {
   const channel = guild.channels.cache.get(getConfig(guild.id).logChannel ?? '');
   if (!channel?.isTextBased() || !lines.length) return;
 
-  const chunks: string[] = [];
-  let cur = '';
-  for (const l of lines) {
-    if (cur.length + l.length + 1 > 1900) {
-      chunks.push(cur);
-      cur = '';
-    }
-    cur += (cur ? '\n' : '') + l;
-  }
-  if (cur) chunks.push(cur);
-
-  for (const content of chunks) {
+  for (const content of chunkLines(lines)) {
     await channel.send({ content, allowedMentions: { parse: [] } }).catch((err) => log.warn('logs', err.message));
   }
 }

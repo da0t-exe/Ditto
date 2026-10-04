@@ -3,6 +3,93 @@
 Each section is also published as a [GitHub release](https://github.com/da0t-exe/Ditto/releases).
 Versions up to 0.5.2 are described on the releases page only.
 
+## Unreleased
+
+Fixes from reading the whole code again and running it without Discord.
+
+### Security
+
+- **Private links**: an address of the host or its network written as IPv6
+  (`http://[::ffff:127.0.0.1]:2333/…`) got past the check and reached yt-dlp and
+  Lavalink. Link-local, multicast, NAT64 and benchmark ranges are refused too, and
+  the address a Deezer short link leads to is checked like any other.
+- `undici` updated for three advisories (it comes with discord.js).
+
+### Music
+
+- **The queue did not move on.** When a track ended or was skipped, the next one
+  never started. Two things stood in the way: the end of a track reaches Ditto
+  under another name than the one it listened for (it keeps its own queue rather
+  than the Lavalink client's), and it recognised its track by comparing what
+  Lavalink sends back with what it had sent, which differs as soon as some of the
+  track has played. Each play now carries a number. Skip, loop, "Queue finished"
+  and leaving after the last track all hung on it.
+- Skipping a clip (TikTok, X, Instagram) while it was still downloading could take
+  the track that replaced it off the air, with a "could not play" message for the
+  skipped one.
+- `/stop` followed at once by `/play` made Ditto leave again: the new player was
+  closed along with the old one, or by Discord's late confirmation that Ditto had
+  left the channel.
+- Started from the dashboard in an empty channel, Ditto leaves after a minute, as
+  it does when everyone leaves.
+- On Windows, the Java runtime could not be unpacked when another `tar` (Git's)
+  came first on the PATH.
+- Lavalink is started again when Java could not be launched at all, and an update
+  waits for the old process to be gone before starting the new one.
+
+### Captcha
+
+- With a quarantine set up, newcomers kept full access to the server for 4 to 12
+  seconds, the time it takes to learn where they came from. The pending role is
+  now given first.
+- A challenge drawn on the spot, when a wave of arrivals has emptied the stock, no
+  longer runs past the three seconds Discord waits for an answer.
+
+### Dashboard and settings
+
+- A numeric setting sent without a value was saved as "not a number": captcha
+  attempts without end, or members sent to AFK the moment they deafened. Values are
+  now checked against their choices in one place, and settings damaged that way are
+  read back as the defaults.
+- A volume that is not a number, sent to the API, no longer breaks the volume.
+- Auto-detect on the dashboard did not record the rooms it found or refresh the
+  Verify panel, unlike in `/setup`.
+- The song being typed and the channel picked were wiped each time the page
+  refreshed; the logs stopped updating once they held 100 lines; ping, uptime and
+  "Music starting" never changed after the page was opened.
+- Stage channels are no longer offered as rooms (picking one was refused).
+- The voice channel list says how many people are in each one, so music can be
+  started where they are.
+- The invite link is shown when the bot is in no server yet.
+
+### Voice
+
+- `/room` answers within Discord's delay however long the change takes, and says
+  which permission is missing instead of "Something went wrong".
+- `/lock` refuses a duration of zero (it locked with no limit) or of more than a
+  year, and a lock on a deleted channel is removed.
+
+### Also
+
+- With `GUILD_IDS` set, Ditto now leaves the other servers alone: it still moved
+  their deafened members to AFK, and the dashboard listed them.
+- A bot that cannot log in (wrong token, Server Members intent off) stops with the
+  reason instead of idling.
+- A server whose member list cannot be loaded is still set up.
+- `npm run selftest` also checks the settings, the music queue and the dashboard's
+  API, on a local port with a stand-in for Discord.
+
+### Tested
+
+Type-checked; `npm run selftest` passes. Without Discord: Lavalink 4.2.2 started on
+Windows and loaded YouTube, YouTube Music, SoundCloud, a direct stream address and
+a downloaded file; 12 of 13 kinds of link really played (the sample X link no
+longer holds a video); the dashboard was driven in a browser against a stand-in
+server. With Discord, from the dashboard, in an empty voice channel: play,
+progress, pause, seek, the next track starting by itself at the end of one, skip,
+previous, loop, stop then play at once, and leaving the empty channel after a
+minute. Slash commands and the captcha's buttons were not clicked in Discord.
+
 ## 0.6.0 — 2026-09-27
 
 The biggest release so far: a captcha that looks exactly like reCAPTCHA, faster

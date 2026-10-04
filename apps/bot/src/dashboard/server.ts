@@ -81,8 +81,13 @@ async function route(client: Client, req: http.IncomingMessage, res: http.Server
 
   const file = STATIC[url.pathname];
   if (method === 'GET' && file) {
-    res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': file.type, 'Cache-Control': 'no-cache' });
-    fs.createReadStream(file.file).pipe(res);
+    const stream = fs.createReadStream(file.file);
+    // A missing or unreadable file answers 404 instead of leaving the request open.
+    stream.once('error', () => (res.headersSent ? res.destroy() : send(res, 404, { error: 'Not found' })));
+    stream.once('open', () => {
+      res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': file.type, 'Cache-Control': 'no-cache' });
+      stream.pipe(res);
+    });
     return;
   }
   if (!url.pathname.startsWith('/api/')) return send(res, 404, { error: 'Not found' });

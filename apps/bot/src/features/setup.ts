@@ -25,6 +25,7 @@ import { quickSetup, quickSetupMissing } from './quicksetup.js';
 import { prepareRooms } from './voice/rooms.js';
 
 type Page = 'home' | 'verify' | 'quarantine' | 'staff' | 'voice';
+type NumberField = 'captchaAttempts' | 'captchaTimeoutMinutes' | 'afkIdleMinutes';
 const PAGES: { id: Page; label: string; emoji: string }[] = [
   { id: 'home', label: 'Overview', emoji: '🏠' },
   { id: 'verify', label: 'Captcha', emoji: '🔐' },
@@ -108,11 +109,11 @@ function view(guild: Guild, page: Page, notice?: string) {
     if (current.length) b.setDefaultChannels(current);
     return row(b);
   };
-  const numberSelect = (field: 'captchaAttempts' | 'captchaTimeoutMinutes' | 'afkIdleMinutes', choices: [number, string][]) =>
+  const numberSelect = (field: NumberField, label: (n: number) => string) =>
     row(
       new StringSelectMenuBuilder()
         .setCustomId(id(field))
-        .addOptions(choices.map(([value, label]) => ({ label, value: String(value), default: cfg[field] === value })))
+        .addOptions(NUMBER_CHOICES.get(field)!.map((value) => ({ label: label(value), value: String(value), default: cfg[field] === value })))
     );
 
   const container = new ContainerBuilder().setAccentColor(COLOR.primary);
@@ -130,18 +131,8 @@ function view(guild: Guild, page: Page, notice?: string) {
       rows.push(roleSelect('pendingRole', 'Pending role — held until the captcha', 1));
       rows.push(roleSelect('memberRole', 'Member role — given after the captcha (optional)', 1));
       rows.push(channelSelect('verifyChannel', 'Verification channel', TEXT, 1));
-      rows.push(
-        numberSelect(
-          'captchaAttempts',
-          [3, 4, 5, 6].map((n) => [n, `${n} attempts before a pause`])
-        )
-      );
-      rows.push(
-        numberSelect(
-          'captchaTimeoutMinutes',
-          [5, 10, 30, 60].map((n) => [n, `Pause of ${n} minutes after the last miss`])
-        )
-      );
+      rows.push(numberSelect('captchaAttempts', (n) => `${n} attempts before a pause`));
+      rows.push(numberSelect('captchaTimeoutMinutes', (n) => `Pause of ${n} minutes after the last miss`));
     } else if (page === 'quarantine') {
       rows.push(roleSelect('quarantineRole', 'Quarantine role', 1));
       const bots = new UserSelectMenuBuilder()
@@ -170,12 +161,7 @@ function view(guild: Guild, page: Page, notice?: string) {
             )
         )
       );
-      rows.push(
-        numberSelect(
-          'afkIdleMinutes',
-          [5, 10, 15, 30, 60].map((n) => [n, `AFK after ${n} minutes deafened`])
-        )
-      );
+      rows.push(numberSelect('afkIdleMinutes', (n) => `AFK after ${n} minutes deafened`));
     }
   }
   if (rows.length) container.addActionRowComponents(...rows);
@@ -240,7 +226,7 @@ function confirmQuick(guild: Guild, page: string) {
 export const setupViews = { view, confirmQuick };
 
 /** Side effects of a change: refresh the captcha panel, record rooms. */
-async function afterChange(guild: Guild, fields: string[]) {
+export async function afterChange(guild: Guild, fields: string[]) {
   if (fields.some((f) => ['verifyChannel', 'pendingRole', 'memberRole', 'captchaAttempts', 'captchaTimeoutMinutes'].includes(f))) {
     await ensurePanel(guild).catch(() => {});
   }
@@ -249,15 +235,24 @@ async function afterChange(guild: Guild, fields: string[]) {
 
 const SINGLE = new Set(['memberRole', 'pendingRole', 'quarantineRole', 'verifyChannel', 'logChannel']);
 const LIST = new Set(['staffRoles', 'rooms', 'quarantineBots']);
-const NUMBER = new Set(['captchaAttempts', 'captchaTimeoutMinutes', 'afkIdleMinutes']);
+/** The values each numeric setting can take, in /setup and on the dashboard alike. */
+export const NUMBER_CHOICES = new Map<NumberField, number[]>([
+  ['captchaAttempts', [3, 4, 5, 6]],
+  ['captchaTimeoutMinutes', [5, 10, 30, 60]],
+  ['afkIdleMinutes', [5, 10, 15, 30, 60]],
+]);
 
-/** Applies a change coming from /setup or the dashboard. */
+/** Applies a change coming from /setup or the dashboard. False when the setting or its value is not one Ditto knows. */
 export async function applySetting(guild: Guild, field: string, values: string[]) {
   const patch: Partial<GuildConfig> = {};
+  const choices = NUMBER_CHOICES.get(field as NumberField);
   if (SINGLE.has(field)) Object.assign(patch, { [field]: values[0] ?? null });
   else if (LIST.has(field)) Object.assign(patch, { [field]: values });
-  else if (NUMBER.has(field)) Object.assign(patch, { [field]: Number(values[0]) });
-  else if (field === 'features') {
+  else if (choices) {
+    const n = Number(values[0]);
+    if (!choices.includes(n)) return false;
+    Object.assign(patch, { [field]: n });
+  } else if (field === 'features') {
     patch.voiceLog = values.includes('voiceLog');
     patch.autoAfk = values.includes('autoAfk');
   } else return false;

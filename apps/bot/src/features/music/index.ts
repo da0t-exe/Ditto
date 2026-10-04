@@ -159,6 +159,8 @@ export async function playIn(
     throw new UserError(`I could not join ${channel}.`);
   }
   const position = await music.enqueue(tracks, next);
+  // Started from the dashboard, the channel may have nobody in it: the usual countdown applies.
+  music.checkEmpty(humansIn(music));
   return { music, tracks, position, playlist };
 }
 
@@ -470,9 +472,13 @@ export const musicFeature: Feature = {
   init(client) {
     initEngine(client, {
       isIdle: () => ![...players.values()].some((m) => m.current),
-      onTrackEnd: (guildId, encoded) => players.get(guildId)?.onEnded(encoded),
-      onTrackError: (guildId, encoded, message) => players.get(guildId)?.onFailed(encoded, message),
-      onPlayerGone: (guildId) => players.get(guildId)?.destroy(true),
+      onTrackEnd: (guildId, play) => players.get(guildId)?.onEnded(play),
+      onTrackError: (guildId, play, message) => players.get(guildId)?.onFailed(play, message),
+      // Only the player in use: the one a /stop just closed must not take down the next /play.
+      onPlayerGone: (guildId, player) => {
+        const music = players.get(guildId);
+        if (music?.owns(player)) music.destroy(true);
+      },
     });
     // Fetch yt-dlp now so the first link is quick; clean downloaded clips every hour.
     ensureYtDlp().catch((err) => log.warn('music', `yt-dlp not ready: ${err.message}`));

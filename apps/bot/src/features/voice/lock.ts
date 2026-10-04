@@ -16,6 +16,7 @@ import { logTo } from '../../core/logs.js';
 import { canModerateVoice, requireVoiceMod } from '../../core/perms.js';
 import type { Command, ComponentHandler } from '../../core/types.js';
 import { COLOR, embed, ok, parseDuration, replyError } from '../../core/ui.js';
+import { runsOn } from '../../env.js';
 import { humans, VOICE_TYPES, wasMovedByCommand } from './util.js';
 
 /**
@@ -35,7 +36,7 @@ const locks = new Map<string, Lock>();
 
 const upsert = db.prepare(
   `INSERT INTO voice_locks (channel_id, guild_id, members, expires_at, created_by) VALUES (?, ?, ?, ?, ?)
-   ON CONFLICT(channel_id) DO UPDATE SET members = excluded.members, expires_at = excluded.expires_at`
+   ON CONFLICT(channel_id) DO UPDATE SET members = excluded.members, expires_at = excluded.expires_at, created_by = excluded.created_by`
 );
 const del = db.prepare('DELETE FROM voice_locks WHERE channel_id = ?');
 const all = db.prepare<[], { channel_id: string; guild_id: string; members: string; expires_at: number | null; created_by: string }>(
@@ -237,7 +238,11 @@ export function initLocks(client: Client) {
     });
   }
   client.on(Events.VoiceStateUpdate, (o, n) => {
-    onVoice(o, n).catch((err) => log.warn('lock', err.message));
+    if (runsOn(n.guild.id)) onVoice(o, n).catch((err) => log.warn('lock', err.message));
+  });
+  // A lock on a channel that no longer exists would otherwise stay listed for ever.
+  client.on(Events.ChannelDelete, (channel) => {
+    if (locks.has(channel.id)) unlock(channel.id);
   });
   setInterval(() => sweepExpired(client), 30_000).unref();
 }

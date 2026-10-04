@@ -1,5 +1,5 @@
 import { Client, Events, GatewayIntentBits, type Guild } from 'discord.js';
-import { env } from './env.js';
+import { env, runsOn } from './env.js';
 import { db } from './core/db.js';
 import { createDispatcher } from './core/dispatch.js';
 import { log } from './core/log.js';
@@ -19,9 +19,10 @@ for (const f of features) f.init?.(client);
 client.on(Events.InteractionCreate, dispatcher.handle);
 
 async function prepareGuild(guild: Guild) {
-  if (env.guildIds.length && !env.guildIds.includes(guild.id)) return;
+  if (!runsOn(guild.id)) return;
   try {
-    await guild.members.fetch();
+    // Without the member list, role and voice lookups fall back on what Discord sends later.
+    await guild.members.fetch().catch((err) => log.warn('bot', `${guild.name}: could not load the member list:`, (err as Error).message));
     // Per-server commands show up instantly, so there is no separate deploy step.
     await guild.commands.set(dispatcher.commands.map((c) => c.data.toJSON()));
     for (const f of features) {
@@ -42,7 +43,10 @@ client.once(Events.ClientReady, async (c) => {
 
 client.on(Events.GuildCreate, (guild) => void prepareGuild(guild));
 
+let closing = false;
 async function shutdown() {
+  if (closing) return;
+  closing = true;
   log.info('bot', 'Shutting down…');
   await client.destroy().catch(() => {});
   db.close();
@@ -53,4 +57,11 @@ process.on('SIGTERM', shutdown);
 process.on('unhandledRejection', (reason) => log.error('bot', 'unhandled rejection:', reason));
 process.on('uncaughtException', (err) => log.error('bot', 'uncaught exception:', err));
 
-client.login(env.token);
+client.login(env.token).catch((err: Error) => {
+  // A bot that cannot log in does nothing: stop with the reason instead of idling.
+  const intents = /disallowed intents/i.test(err.message)
+    ? ' — turn on the Server Members intent (Developer Portal → Bot → Privileged Gateway Intents)'
+    : '';
+  console.error(`Could not log in to Discord: ${err.message}${intents}`);
+  process.exit(1);
+});

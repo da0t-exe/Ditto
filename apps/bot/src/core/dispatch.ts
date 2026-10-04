@@ -1,4 +1,5 @@
 import { MessageFlags, type Interaction } from 'discord.js';
+import { runsOn } from '../env.js';
 import { log } from './log.js';
 import type { Command, ComponentHandler, Feature } from './types.js';
 import { replyError } from './ui.js';
@@ -12,11 +13,16 @@ export function createDispatcher(features: Feature[]) {
   }
 
   const dispatch = async (i: Interaction) => {
-    if (!i.inCachedGuild()) {
-      if (i.isRepliable()) await i.reply({ content: 'Ditto only works inside a server.', flags: MessageFlags.Ephemeral });
-      return;
-    }
     try {
+      if (!i.inCachedGuild()) {
+        if (i.isRepliable()) await i.reply({ content: 'Ditto only works inside a server.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      // A server left out of GUILD_IDS may still show commands registered before it was.
+      if (!runsOn(i.guildId)) {
+        if (i.isRepliable()) await i.reply({ content: 'Ditto is not enabled on this server.', flags: MessageFlags.Ephemeral });
+        return;
+      }
       if (i.isChatInputCommand()) await commands.get(i.commandName)?.run(i);
       else if (i.isAutocomplete()) await commands.get(i.commandName)?.autocomplete?.(i);
       else if (i.isMessageComponent()) {

@@ -15,6 +15,7 @@ import { logTo } from '../../core/logs.js';
 import { canModerateVoice } from '../../core/perms.js';
 import type { Command } from '../../core/types.js';
 import { ok, replyError } from '../../core/ui.js';
+import { runsOn } from '../../env.js';
 import { humans } from './util.js';
 
 /**
@@ -153,43 +154,53 @@ export const roomCommand: Command = {
     }
     const cfg = getConfig(i.guildId);
     const sub = i.options.getSubcommand();
-    const reply = (message: string) => i.reply({ embeds: [ok(message)], flags: MessageFlags.Ephemeral });
+    // Changing a channel can take longer than Discord waits for an answer (several
+    // permission edits, or a rename held back by Discord's own limit).
+    await i.deferReply({ flags: MessageFlags.Ephemeral });
+    const reply = (message: string) => i.editReply({ embeds: [ok(message)] });
 
-    if (sub === 'name') {
-      await channel.setName(i.options.getString('text', true));
-      return reply('Room renamed. (Discord allows 2 renames every 10 minutes.)');
+    try {
+      if (sub === 'name') {
+        await channel.setName(i.options.getString('text', true));
+        return await reply('Room renamed. (Discord allows 2 renames every 10 minutes.)');
+      }
+      if (sub === 'limit') {
+        const slots = i.options.getInteger('slots', true);
+        if (!('setUserLimit' in channel)) return await replyError(i, 'This channel has no user limit.');
+        await channel.setUserLimit(slots);
+        return await (slots ? reply(`Limit set to ${slots}.`) : reply('Limit removed.'));
+      }
+      if (sub === 'lock') {
+        await channel.permissionOverwrites.edit(i.guild.roles.everyone, { Connect: false });
+        if (cfg.memberRole && i.guild.roles.cache.has(cfg.memberRole)) await channel.permissionOverwrites.edit(cfg.memberRole, { Connect: false });
+        for (const m of channel.members.values()) await channel.permissionOverwrites.edit(m, { Connect: true });
+        return await reply('Room locked. Use `/room invite` to let someone in.');
+      }
+      if (sub === 'unlock') {
+        await channel.permissionOverwrites.set(toOverwrites(room.defaults));
+        return await reply('Room open again.');
+      }
+      const target = i.options.getMember('member');
+      if (!target) return await replyError(i, 'Member not found.');
+      if (sub === 'invite') {
+        await channel.permissionOverwrites.edit(target, { Connect: true, ViewChannel: true });
+        return await reply(`${target} can join.`);
+      }
+      // transfer
+      if (!channel.members.has(target.id)) return await replyError(i, `${target} must be in the room.`);
+      setOwner.run(target.id, channel.id);
+      return await reply(`${target} now owns the room.`);
+    } catch (err) {
+      // 50013 Missing Permissions, 50001 Missing Access: say what to fix rather than « something went wrong ».
+      const code = (err as { code?: number }).code;
+      if (code !== 50013 && code !== 50001) throw err;
+      return replyError(i, `I cannot change ${channel}: give me **Manage Channels** and **Manage Permissions** on it.`);
     }
-    if (sub === 'limit') {
-      const slots = i.options.getInteger('slots', true);
-      if (!('setUserLimit' in channel)) return replyError(i, 'This channel has no user limit.');
-      await channel.setUserLimit(slots);
-      return slots ? reply(`Limit set to ${slots}.`) : reply('Limit removed.');
-    }
-    if (sub === 'lock') {
-      await channel.permissionOverwrites.edit(i.guild.roles.everyone, { Connect: false });
-      if (cfg.memberRole) await channel.permissionOverwrites.edit(cfg.memberRole, { Connect: false });
-      for (const m of channel.members.values()) await channel.permissionOverwrites.edit(m, { Connect: true });
-      return reply('Room locked. Use `/room invite` to let someone in.');
-    }
-    if (sub === 'unlock') {
-      await channel.permissionOverwrites.set(toOverwrites(room.defaults));
-      return reply('Room open again.');
-    }
-    const target = i.options.getMember('member');
-    if (!target) return replyError(i, 'Member not found.');
-    if (sub === 'invite') {
-      await channel.permissionOverwrites.edit(target, { Connect: true, ViewChannel: true });
-      return reply(`${target} can join.`);
-    }
-    // transfer
-    if (!channel.members.has(target.id)) return replyError(i, `${target} must be in the room.`);
-    setOwner.run(target.id, channel.id);
-    return reply(`${target} now owns the room.`);
   },
 };
 
 export function initRooms(client: Client) {
   client.on(Events.VoiceStateUpdate, (o, n) => {
-    onVoice(o, n).catch((err) => log.warn('rooms', err.message));
+    if (runsOn(n.guild.id)) onVoice(o, n).catch((err) => log.warn('rooms', err.message));
   });
 }

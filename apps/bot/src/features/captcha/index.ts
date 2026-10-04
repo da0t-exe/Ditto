@@ -21,9 +21,10 @@ import { logTo } from '../../core/logs.js';
 import { isPrivileged, requirePrivileged } from '../../core/perms.js';
 import type { Feature } from '../../core/types.js';
 import { card, COLOR, ok, replyError, text, V2 } from '../../core/ui.js';
+import { runsOn } from '../../env.js';
 import { GRID } from './cells.js';
 import { promptFor } from './classes.js';
-import { nextChallenge, prepareChallenges } from './grid.js';
+import { hasReady, nextChallenge, prepareChallenges } from './grid.js';
 import { dropOutdatedExtras, getPool, reloadPool } from './pool.js';
 import { closeSession, getSession, getState, markVerified, MAX_REFRESH, nextRound, openSession, record, setState, type Session } from './session.js';
 
@@ -76,7 +77,8 @@ function controls(s: Session) {
 
 function attemptsLeft(s: Session) {
   if (s.test) return 'Test mode — your roles will not change';
-  const left = getConfig(s.guildId).captchaAttempts - getState(s.guildId, s.userId).failures;
+  // At least one: the setting may have been lowered below the misses already made.
+  const left = Math.max(1, getConfig(s.guildId).captchaAttempts - getState(s.guildId, s.userId).failures);
   return `${left} attempt${left === 1 ? '' : 's'} left`;
 }
 
@@ -161,8 +163,19 @@ async function start(i: ButtonInteraction<'cached'> | ChatInputCommandInteractio
   }
   if (!getPool()) return replyError(i, 'Verification is temporarily unavailable. A staff member will let you in.');
 
+  // With the stock empty a challenge is drawn now, which can take longer than Discord waits for an answer.
+  if (!hasReady()) await i.deferReply({ flags: MessageFlags.Ephemeral });
   const s = openSession(i.guildId, i.user.id, await nextChallenge(), test);
-  await i.reply({ ...challengeMessage(s), flags: MessageFlags.Ephemeral | V2 });
+  if (i.deferred) await i.editReply({ ...challengeMessage(s), flags: V2 });
+  else await i.reply({ ...challengeMessage(s), flags: MessageFlags.Ephemeral | V2 });
+}
+
+/** Another picture on the same message, after a miss or a reload. */
+async function swapPicture(i: ButtonInteraction<'cached'>, s: Session, notice?: string) {
+  if (!hasReady()) await i.deferUpdate();
+  nextRound(s, await nextChallenge());
+  const view = { ...challengeMessage(s, notice), attachments: [] };
+  return i.deferred ? i.editReply(view) : i.update(view);
 }
 
 /** Only the buttons changed: the picture already on the message stays. */
@@ -215,8 +228,7 @@ async function fail(i: ButtonInteraction<'cached'>, s: Session) {
   setState(i.guildId, i.user.id, failures, 0);
   // reCAPTCHA's own wording.
   const notice = s.challenge.required.length && !s.selected.size ? '❌ **Please select all matching images.**' : '❌ **Please try again.**';
-  nextRound(s, await nextChallenge());
-  return i.update({ ...challengeMessage(s, notice), attachments: [] });
+  return swapPicture(i, s, notice);
 }
 
 /** The picture again, with the expected answer: for staff trying the captcha. */
@@ -286,15 +298,27 @@ async function onJoin(member: GuildMember) {
   if (member.user.bot) return;
   const cfg = getConfig(member.guild.id);
   const name = member.user.username;
+  const pending = verificationOn(cfg) ? cfg.pendingRole : null;
+  // The pending role goes on first: finding out where a member came from takes a few
+  // seconds, and the server has to stay hidden from them in the meantime.
+  const pendingError = pending
+    ? await member.roles.add(pending, 'Waiting for the captcha').then(
+        () => null,
+        (err: Error) => err
+      )
+    : null;
+
   if (cfg.quarantineRole && cfg.quarantineBots.length && (await joinedViaQuarantineBot(member, cfg.quarantineBots))) {
     await member.roles.add(cfg.quarantineRole, 'Brought in by a member-pushing bot');
+    // Quarantined instead of verified: the captcha is not for them.
+    if (pending && !pendingError) await member.roles.remove(pending, 'Quarantined').catch(() => {});
     record(member.guild.id, member.id, 'quarantine');
     logTo(member.guild, `🙈 **${name}** was brought in by a bot: quarantined`);
     return;
   }
   if (!verificationOn(cfg)) return;
+  if (pendingError) throw pendingError;
   record(member.guild.id, member.id, 'join');
-  if (cfg.pendingRole) await member.roles.add(cfg.pendingRole, 'Waiting for the captcha');
   logTo(member.guild, `👋 **${name}** joined, captcha pending`);
 }
 
@@ -379,8 +403,7 @@ export const captchaFeature: Feature = {
       if (action === 'new') {
         if (s.refreshes >= MAX_REFRESH) return i.deferUpdate();
         s.refreshes++;
-        nextRound(s, await nextChallenge());
-        return i.update({ ...challengeMessage(s), attachments: [] });
+        return swapPicture(i, s);
       }
       if (action === 'ok') {
         const correct = isCorrect(s);
@@ -396,10 +419,11 @@ export const captchaFeature: Feature = {
     prepareChallenges().catch((err) => log.error('captcha', 'could not prepare challenges:', err));
 
     client.on(Events.GuildMemberAdd, (member) => {
-      onJoin(member).catch((err) => log.warn('captcha', err.message));
+      if (runsOn(member.guild.id)) onJoin(member).catch((err) => log.warn('captcha', err.message));
     });
     // Access given by hand: drop the pending role.
     client.on(Events.GuildMemberUpdate, (oldMember, newMember) => {
+      if (!runsOn(newMember.guild.id)) return;
       const cfg = getConfig(newMember.guild.id);
       if (!cfg.memberRole || !cfg.pendingRole) return;
       if (!oldMember.roles.cache.has(cfg.memberRole) && newMember.roles.cache.has(cfg.memberRole) && newMember.roles.cache.has(cfg.pendingRole)) {

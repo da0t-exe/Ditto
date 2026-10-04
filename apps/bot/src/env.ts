@@ -7,6 +7,12 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 
 dotenv.config({ path: path.join(ROOT, '.env') });
 
+/** A usable TCP port, or the fallback when the variable holds something else. */
+function port(value: string | undefined, fallback: number) {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 && n < 65536 ? n : fallback;
+}
+
 export const env = {
   token: process.env.BOT_TOKEN?.trim() ?? '',
   ownerId: process.env.OWNER_ID?.trim() || null,
@@ -19,9 +25,12 @@ export const env = {
   /** The web dashboard (DASHBOARD=0 turns it off). */
   dashboard: process.env.DASHBOARD?.trim() !== '0',
   /** Pterodactyl gives each server a public port in SERVER_PORT: the dashboard uses it. */
-  dashboardPort: Number(process.env.DASHBOARD_PORT?.trim() || process.env.SERVER_PORT?.trim() || 3000),
+  dashboardPort: port(process.env.DASHBOARD_PORT?.trim() || process.env.SERVER_PORT?.trim(), 3000),
   dashboardHost: process.env.DASHBOARD_HOST?.trim() || '0.0.0.0',
   /** Public address of the dashboard, used in the links Ditto sends (e.g. https://ditto.example.com). */
   dashboardUrl: process.env.DASHBOARD_URL?.trim().replace(/\/+$/, '') || null,
   dashboardPassword: process.env.DASHBOARD_PASSWORD?.trim() || null,
 };
+
+/** Whether Ditto works on this server: every server, or only those of GUILD_IDS. */
+export const runsOn = (guildId: string) => !env.guildIds.length || env.guildIds.includes(guildId);

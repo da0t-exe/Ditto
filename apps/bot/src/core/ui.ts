@@ -59,12 +59,13 @@ export async function pool<T>(items: T[], concurrency: number, fn: (item: T) => 
   await Promise.all(workers);
 }
 
-/** « 30m », « 2h », « 1h30 », « 45 » (minutes) → milliseconds. */
+const MAX_DURATION = 365 * 24 * 3600_000;
+
+/** « 30m », « 2h », « 1h30 », « 45 » (minutes) → milliseconds. Null for anything else, zero, or more than a year. */
 export function parseDuration(input: string): number | null {
   const s = input.trim().toLowerCase().replace(/\s+/g, '');
-  if (/^\d+$/.test(s)) return Number(s) * 60_000;
   const m = /^(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)(?:m|min)?)?$/.exec(s);
   if (!m || !(m[1] || m[2] || m[3])) return null;
   const ms = (Number(m[1] ?? 0) * 24 * 60 + Number(m[2] ?? 0) * 60 + Number(m[3] ?? 0)) * 60_000;
-  return ms > 0 ? ms : null;
+  return ms > 0 && ms <= MAX_DURATION ? ms : null;
 }

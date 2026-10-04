@@ -126,7 +126,10 @@ async function ensureJava() {
   fs.mkdirSync(JRE_DIR, { recursive: true });
   const archive = path.join(JRE_DIR, os === 'windows' ? 'jre.zip' : 'jre.tar.gz');
   await download(`https://api.adoptium.net/v3/binary/latest/21/ga/${os}/${arch}/jre/hotspot/normal/eclipse`, archive);
-  const untar = await run('tar', [os === 'windows' ? '-xf' : '-xzf', archive, '-C', JRE_DIR], 300_000);
+  // Windows' own tar reads zip files; another tar found first on the PATH (Git's, MSYS2's) does not.
+  const systemTar = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe');
+  const tar = os === 'windows' && fs.existsSync(systemTar) ? systemTar : 'tar';
+  const untar = await run(tar, [os === 'windows' ? '-xf' : '-xzf', archive, '-C', JRE_DIR], 300_000);
   fs.rmSync(archive, { force: true });
   if (untar.code !== 0) throw new Error(`could not unpack Java: ${untar.err}`);
   const java = findJava(JRE_DIR);
@@ -270,21 +273,40 @@ function launch(java: string) {
       if (/\b(WARN|ERROR)\b|Exception|Lavalink is ready/.test(line)) log.info('lavalink', line.replace(/^.*?(WARN|ERROR|INFO)\s+/, '$1 ').trim().slice(0, 300));
     }
   };
-  child.stdout?.on('data', relay);
-  child.stderr?.on('data', relay);
-  child.on('exit', (code) => {
-    child = null;
+  const proc = child;
+  proc.stdout?.on('data', relay);
+  proc.stderr?.on('data', relay);
+  // Fires once, whether Java ran and stopped or could not be started at all.
+  let ended = false;
+  const onEnd = (why: string) => {
+    if (ended) return;
+    ended = true;
+    if (child === proc) child = null;
     if (stopping) return;
     crashes = Date.now() - startedAt > 5 * 60_000 ? 1 : crashes + 1;
     const wait = Math.min(5000 * 2 ** (crashes - 1), 5 * 60_000);
-    log.warn('music', `Lavalink stopped (code ${code}), restarting in ${Math.round(wait / 1000)} s`);
-    setTimeout(() => launch(java), wait);
-  });
+    log.warn('music', `Lavalink stopped (${why}), restarting in ${Math.round(wait / 1000)} s`);
+    setTimeout(() => {
+      if (!child && !stopping) launch(java);
+    }, wait);
+  };
+  proc.on('error', (err) => onEnd(err.message));
+  proc.on('exit', (code) => onEnd(`code ${code}`));
 }
 
+/** Stops Lavalink and waits until its process is gone, so the next one finds the port free. */
 function stop() {
   stopping = true;
-  child?.kill();
+  const proc = child;
+  if (!proc) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    const forced = setTimeout(() => proc.kill('SIGKILL'), 10_000);
+    proc.once('exit', () => {
+      clearTimeout(forced);
+      resolve();
+    });
+    proc.kill();
+  });
 }
 
 process.on('exit', () => child?.kill());
@@ -315,7 +337,7 @@ export async function startLavalink(isIdle: () => boolean): Promise<NodeConfig> 
   writeConfig(node.password);
   launch(java);
   const version = await waitReady(node).catch((err) => {
-    stop();
+    void stop();
     throw err;
   });
   const { youtube } = readVersions();
@@ -334,8 +356,7 @@ export async function startLavalink(isIdle: () => boolean): Promise<NodeConfig> 
     restartPending = false;
     log.info('music', 'restarting Lavalink onto the new version…');
     writeConfig(node.password);
-    stop();
-    await new Promise((r) => setTimeout(r, 3000));
+    await stop();
     launch(java);
     await waitReady(node).catch((err) => log.error('music', err.message));
   }, 5 * 60_000).unref();

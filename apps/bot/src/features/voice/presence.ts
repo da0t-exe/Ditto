@@ -2,6 +2,7 @@ import { Events, type Client, type VoiceState } from 'discord.js';
 import { getConfig } from '../../core/config.js';
 import { log } from '../../core/log.js';
 import { logTo } from '../../core/logs.js';
+import { runsOn } from '../../env.js';
 
 /** Voice log, and auto-AFK (deafened for X minutes → AFK channel). */
 const afkTimers = new Map<string, NodeJS.Timeout>();
@@ -47,6 +48,7 @@ function autoAfk(newState: VoiceState) {
 
 export function initPresence(client: Client) {
   client.on(Events.VoiceStateUpdate, (oldState, newState) => {
+    if (!runsOn(newState.guild.id)) return;
     voiceLog(oldState, newState);
     autoAfk(newState);
   });

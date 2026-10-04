@@ -23,9 +23,13 @@ export function formatTime(sec: number | null | undefined) {
 const cut = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 const escape = (s: string) => s.replace(/([\\*_`~|[\]()<>#-])/g, '\\$1');
 
+/** A link Discord's markdown reads whole: brackets and spaces in the address would cut it short. */
+const LINK_ESCAPES: Record<string, string> = { '(': '%28', ')': '%29', '<': '%3C', '>': '%3E' };
+const linkTarget = (url: string) => url.replace(/[()<>]|\s/g, (c) => LINK_ESCAPES[c] ?? encodeURIComponent(c));
+
 export function trackLine(t: Track) {
   const who = t.author ? ` — ${escape(cut(t.author, 40))}` : '';
-  return `[${escape(cut(t.title, 70))}](${t.link})${who}`;
+  return `[${escape(cut(t.title, 70))}](${linkTarget(t.link)})${who}`;
 }
 
 export const FILTERS: { value: FilterName; label: string; emoji: string }[] = [

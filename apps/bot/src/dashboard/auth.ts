@@ -149,6 +149,8 @@ export function allowAttempt(ip: string) {
   const now = Date.now();
   const a = attempts.get(ip);
   if (!a || a.until < now) {
+    // Addresses whose pause is over are forgotten, so the list cannot grow without end.
+    if (attempts.size > 1000) for (const [k, v] of attempts) if (v.until < now) attempts.delete(k);
     attempts.set(ip, { n: 1, until: now + 10 * 60_000 });
     return true;
   }

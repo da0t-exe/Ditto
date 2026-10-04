@@ -103,6 +103,10 @@ export interface DittoOption {
     name: string;
     parent?: string | null;
     color?: string;
+    /** A stage channel: music can play there, but it cannot be a room. */
+    stage?: boolean;
+    /** People in a voice channel right now. */
+    listeners?: number;
 }
 
 export interface DittoConfig {

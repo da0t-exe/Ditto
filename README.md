@@ -205,7 +205,7 @@ start, then set it back — `.env` and `data/` are never touched.
 | `npm start` | Run the bot |
 | `npm run dev` | Run and restart on file changes |
 | `npm run typecheck` | Type-check without running |
-| `npm run selftest` | Offline checks: captcha, message layouts, search ranking |
+| `npm run selftest` | Offline checks: captcha, message layouts, search ranking, settings, the music queue, the dashboard API |
 | `npm run captcha:fetch [n]` | Add up to `n` more photos per category from Open Images, then `/captcha reload` |
 
 ## Architecture

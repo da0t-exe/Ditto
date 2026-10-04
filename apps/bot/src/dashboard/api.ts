@@ -4,7 +4,7 @@ import { ChannelType, PermissionFlagsBits, type Client, type Guild } from 'disco
 import { applyDetection, getConfig, type GuildConfig } from '../core/config.js';
 import { logTo, recentLogs } from '../core/logs.js';
 import { isPrivileged } from '../core/perms.js';
-import { ROOT } from '../env.js';
+import { ROOT, runsOn } from '../env.js';
 import { ensurePanel, verificationOn } from '../features/captcha/index.js';
 import { getPool } from '../features/captcha/pool.js';
 import { captchaStats } from '../features/captcha/session.js';
@@ -13,7 +13,7 @@ import { musicOf, playIn, refreshPlayer } from '../features/music/index.js';
 import type { FilterName, LoopMode } from '../features/music/player.js';
 import { UserError } from '../features/music/search.js';
 import { quickSetup, quickSetupMissing } from '../features/quicksetup.js';
-import { applySetting } from '../features/setup.js';
+import { afterChange, applySetting, NUMBER_CHOICES } from '../features/setup.js';
 import { listLocks, removeLock } from '../features/voice/lock.js';
 import type { Session } from './auth.js';
 
@@ -39,7 +39,7 @@ const icon = (g: Guild) => g.iconURL({ size: 128 }) ?? null;
 
 /** Servers this session may manage. */
 export function guildsFor(client: Client, s: Session) {
-  const all = [...client.guilds.cache.values()];
+  const all = [...client.guilds.cache.values()].filter((g) => runsOn(g.id));
   if (!s.guildId) return all;
   const g = client.guilds.cache.get(s.guildId);
   const member = g?.members.cache.get(s.userId ?? '');
@@ -95,7 +95,15 @@ function options(g: Guild) {
     [...g.channels.cache.values()]
       .filter((c) => types.includes(c.type))
       .sort((a, b) => ('position' in a && 'position' in b ? a.position - b.position : 0))
-      .map((c) => ({ id: c.id, name: c.name, parent: c.parent?.name ?? null }));
+      .map((c) => ({
+        id: c.id,
+        name: c.name,
+        parent: c.parent?.name ?? null,
+        // Stage channels can play music but cannot be rooms: the pages leave them out of that list.
+        ...(c.type === ChannelType.GuildStageVoice ? { stage: true } : {}),
+        // People in the channel right now, so music can be started where they are.
+        ...(c.isVoiceBased() ? { listeners: c.members.filter((m) => !m.user.bot).size } : {}),
+      }));
   const bots = [...g.members.cache.values()].filter((m) => m.user.bot && m.id !== g.client.user.id).map((m) => ({ id: m.id, name: m.user.username }));
   return {
     roles,
@@ -169,18 +177,19 @@ export function guildDetail(g: Guild) {
 
 /** Just what changes often, for the page to poll. */
 export function guildLive(g: Guild) {
-  return { music: musicState(g), logs: recentLogs(g.id).slice(-100), locks: listLocks(g.id).length };
+  return {
+    music: musicState(g),
+    logs: recentLogs(g.id).slice(-100),
+    locks: listLocks(g.id).length,
+    bot: { uptime: Date.now() - startedAt, ping: g.client.ws.ping, music: musicStatus().ready },
+  };
 }
 
 // ---------- Changes ----------
 
 const ROLE_FIELDS = new Set(['memberRole', 'pendingRole', 'quarantineRole', 'staffRoles']);
 const TEXT_FIELDS = new Set(['verifyChannel', 'logChannel']);
-const ALLOWED_NUMBERS: Record<string, number[]> = {
-  captchaAttempts: [3, 4, 5, 6],
-  captchaTimeoutMinutes: [5, 10, 30, 60],
-  afkIdleMinutes: [5, 10, 15, 30, 60],
-};
+const NUMBER_FIELDS = new Set<string>(NUMBER_CHOICES.keys());
 
 export async function setConfig(g: Guild, field: string, values: unknown, by: string) {
   if (!Array.isArray(values) || !values.every((v) => typeof v === 'string') || values.length > 25) throw new HttpError(400, 'Bad values');
@@ -189,12 +198,12 @@ export async function setConfig(g: Guild, field: string, values: unknown, by: st
     if (TEXT_FIELDS.has(field)) return g.channels.cache.get(v)?.type === ChannelType.GuildText;
     if (field === 'rooms') return g.channels.cache.get(v)?.type === ChannelType.GuildVoice;
     if (field === 'quarantineBots') return !!g.members.cache.get(v)?.user.bot;
-    if (field in ALLOWED_NUMBERS) return ALLOWED_NUMBERS[field].includes(Number(v));
+    if (NUMBER_FIELDS.has(field)) return true; // checked against its choices by applySetting
     if (field === 'features') return v === 'voiceLog' || v === 'autoAfk';
     return false;
   };
   if (!values.every(ok)) throw new HttpError(400, 'One of the values does not exist on this server');
-  if (!(await applySetting(g, field, values))) throw new HttpError(400, 'Unknown setting');
+  if (!(await applySetting(g, field, values))) throw new HttpError(400, NUMBER_FIELDS.has(field) ? 'That value is not one of the choices' : 'Unknown setting');
   logTo(g, `🌐 **${by}** changed the setting \`${field}\` from the dashboard`);
   return getConfig(g.id);
 }
@@ -206,8 +215,17 @@ export async function runAction(g: Guild, action: string, by: string) {
     logTo(g, `🌐 **${by}** ran the quick setup from the dashboard`);
     return quickSetup(g);
   }
-  if (action === 'panel') return { posted: await ensurePanel(g) };
-  if (action === 'detect') return { filled: (await applyDetection(g)).filled };
+  if (action === 'panel') {
+    const posted = await ensurePanel(g).catch(() => {
+      throw new HttpError(400, 'Ditto cannot read or write in the verification channel — check its permissions there.');
+    });
+    return { posted };
+  }
+  if (action === 'detect') {
+    const { filled } = await applyDetection(g);
+    await afterChange(g, filled); // like /setup: the panel follows, and detected rooms are recorded
+    return { filled };
+  }
   throw new HttpError(404, 'Unknown action');
 }
 
@@ -254,9 +272,12 @@ export async function musicAction(g: Guild, action: string, body: Record<string,
       m.queue.length = 0;
       m.queueChanged();
       break;
-    case 'volume':
-      m.setVolume(Number(body.value));
+    case 'volume': {
+      const level = Number(body.value);
+      if (typeof body.value !== 'number' || !Number.isFinite(level)) throw new HttpError(400, 'Bad volume');
+      m.setVolume(level);
       break;
+    }
     case 'loop':
       if (!['off', 'track', 'queue'].includes(String(body.value))) throw new HttpError(400, 'Bad loop mode');
       m.loop = body.value as LoopMode;
@@ -267,13 +288,15 @@ export async function musicAction(g: Guild, action: string, body: Record<string,
       break;
     case 'seek': {
       const at = Number(body.value);
-      if (!Number.isFinite(at) || at < 0) throw new HttpError(400, 'Bad time');
+      const t = m.current;
+      if (typeof body.value !== 'number' || !Number.isFinite(at) || at < 0) throw new HttpError(400, 'Bad time');
+      if (!t || t.live || (t.duration && at >= t.duration)) throw new HttpError(400, 'This track cannot be sought there');
       await m.seek(at);
       break;
     }
     case 'remove': {
       const index = Number(body.value);
-      if (!Number.isInteger(index) || index < 0 || index >= m.queue.length) throw new HttpError(400, 'Bad position');
+      if (typeof body.value !== 'number' || !Number.isInteger(index) || index < 0 || index >= m.queue.length) throw new HttpError(400, 'Bad position');
       m.queue.splice(index, 1);
       m.queueChanged();
       break;

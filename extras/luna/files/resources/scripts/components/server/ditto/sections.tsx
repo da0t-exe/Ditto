@@ -513,7 +513,7 @@ const AddMusic = ({ store, guild, playing }: { store: DittoStore; guild: DittoGu
                         <option value={''}>In which voice channel?</option>
                         {guild.options.voiceChannels.map((c) => (
                             <option key={c.id} value={c.id}>
-                                {c.name}
+                                {c.listeners ? `${c.name} · ${c.listeners} in voice` : c.name}
                             </option>
                         ))}
                     </Select>
@@ -644,9 +644,9 @@ export const Music = ({ store, guild }: SectionProps) => {
                                     onClick={(e) => {
                                         if (!seekable) return;
                                         const r = e.currentTarget.getBoundingClientRect();
-                                        store.music('seek', {
-                                            value: Math.floor(((e.clientX - r.left) / r.width) * (t.duration ?? 0)),
-                                        });
+                                        const length = t.duration ?? 0;
+                                        const at = Math.floor(((e.clientX - r.left) / r.width) * length);
+                                        store.music('seek', { value: Math.max(0, Math.min(length - 1, at)) });
                                     }}
                                 >
                                     <div
@@ -806,7 +806,11 @@ const VoiceSettings = ({ store, guild }: { store: DittoStore; guild: DittoGuild 
     return (
         <>
             <Field label={'Rooms'} hint={'The first person in owns the room; it goes back to normal once empty.'}>
-                <MultiSelect options={o.voiceChannels} values={c.rooms} onChange={(v) => store.save('rooms', v)} />
+                <MultiSelect
+                    options={o.voiceChannels.filter((v) => !v.stage)}
+                    values={c.rooms}
+                    onChange={(v) => store.save('rooms', v)}
+                />
             </Field>
             <Toggle
                 name={'ditto-voice-log'}

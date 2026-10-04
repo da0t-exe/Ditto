@@ -8,11 +8,30 @@ import { UserError } from './search.js';
 export interface EngineHooks {
   isIdle(): boolean;
   /** A track finished, was stopped or failed to load (not when replaced by another one). */
-  onTrackEnd(guildId: string, encoded: string | null): void;
+  onTrackEnd(guildId: string, play: number | null): void;
   /** A track broke while playing (Lavalink sends the end event right after). */
-  onTrackError(guildId: string, encoded: string | null, message: string): void;
-  /** Lavalink dropped the player (kicked from voice, node lost…). */
-  onPlayerGone(guildId: string): void;
+  onTrackError(guildId: string, play: number | null, message: string): void;
+  /** Lavalink dropped a player (kicked from voice, node lost, or stopped by Ditto itself). */
+  onPlayerGone(guildId: string, player: Player): void;
+}
+
+/**
+ * Under this name each play carries its number in the track's user data, which Lavalink
+ * hands back with every event about it. The encoded track cannot be used to tell which
+ * play an event is about: it holds the position, so it comes back different from what
+ * was sent as soon as some of it has played.
+ */
+export const PLAY_TAG = 'ditto';
+
+type Tagged = { userData?: Record<string, unknown> | null } | null | undefined;
+
+/** The number of the play an event is about, or null when it carries none. */
+function playOf(...tracks: Tagged[]) {
+  for (const t of tracks) {
+    const n = t?.userData?.[PLAY_TAG];
+    if (typeof n === 'number') return n;
+  }
+  return null;
 }
 
 let manager: LavalinkManager | null = null;
@@ -48,16 +67,22 @@ export function initEngine(client: Client, hooks: EngineHooks) {
         },
       });
 
-      manager.on('trackEnd', (player, track, payload) => {
-        if (payload.reason !== 'replaced') hooks.onTrackEnd(player.guildId, payload.track?.encoded ?? track?.encoded ?? null);
-      });
-      manager.on('trackStuck', (player, track) => {
-        hooks.onTrackError(player.guildId, track?.encoded ?? null, 'track stuck');
+      // lavalink-client keeps a queue of its own, which Ditto leaves empty (it has its own):
+      // the end of a track therefore arrives as « queueEnd ». « trackEnd » only comes when
+      // that queue has something left — listening to both keeps Ditto's queue moving either way.
+      const ended = (player: Player, track: Tagged, payload: { type: string; reason?: string; track?: Tagged }) => {
+        if (payload.type !== 'TrackEndEvent' || payload.reason === 'replaced') return;
+        hooks.onTrackEnd(player.guildId, playOf(payload.track, track));
+      };
+      manager.on('trackEnd', ended);
+      manager.on('queueEnd', ended);
+      manager.on('trackStuck', (player, track, payload) => {
+        hooks.onTrackError(player.guildId, playOf(payload.track, track), 'track stuck');
       });
       manager.on('trackError', (player, track, payload) => {
-        hooks.onTrackError(player.guildId, track?.encoded ?? null, payload.exception?.message ?? 'playback error');
+        hooks.onTrackError(player.guildId, playOf(payload.track, track), payload.exception?.message ?? 'playback error');
       });
-      manager.on('playerDestroy', (player) => hooks.onPlayerGone(player.guildId));
+      manager.on('playerDestroy', (player) => hooks.onPlayerGone(player.guildId, player));
       manager.nodeManager.on('error', (_n, err) => log.warn('music', `Lavalink: ${err.message}`));
 
       await manager.init({ id: c.user.id, username: c.user.username });

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import type { Guild, Message, VoiceBasedChannel } from 'discord.js';
 import { log } from '../../core/log.js';
-import { lavalink, loadEncoded, type LavalinkPlayer } from './engine.js';
+import { lavalink, loadEncoded, PLAY_TAG, type LavalinkPlayer } from './engine.js';
 import { assertPublicUrl, ensurePlayable, UserError, type Found, type Source } from './search.js';
 import { directAudioUrl, downloadAudio, forgetDirect, isCachedAudio } from './tools.js';
 
@@ -75,6 +75,18 @@ export function warm(track: Found) {
 
 // ---------- Player ----------
 
+/** Players Lavalink is still taking down, per server: the next one waits for that to finish. */
+const leaving = new Map<string, Promise<unknown>>();
+
+/**
+ * Resolves once Discord has confirmed that Ditto is out of voice in this server (three
+ * seconds at most). That confirmation, arriving after a new player was created, would
+ * be read as the new player being disconnected, and close it.
+ */
+async function outOfVoice(guild: Guild) {
+  for (let k = 0; k < 30 && guild.members.me?.voice?.channelId; k++) await new Promise((r) => setTimeout(r, 100));
+}
+
 /** Everything Ditto plays in one server. */
 export class GuildMusic {
   readonly queue: Track[] = [];
@@ -91,8 +103,12 @@ export class GuildMusic {
   readonly stopVotes = new Set<string>();
 
   private player: LavalinkPlayer | null = null;
-  /** The Lavalink track now playing; events about any other one are stale. */
-  private currentEncoded: string | null = null;
+  /**
+   * The play Lavalink is on, as numbered by playEncoded(); events about any other one
+   * are stale (see PLAY_TAG).
+   */
+  private playing: number | null = null;
+  private plays = 0;
   /** The last track handed to Lavalink, replayed as is when looping. */
   private lastEncoded: string | null = null;
   private routes: Route[] = [];
@@ -112,7 +128,9 @@ export class GuildMusic {
       onQueueEnd(music: GuildMusic): void;
       onError(music: GuildMusic, track: Track, error: Error): void;
       onDestroy(music: GuildMusic): void;
-    }
+    },
+    /** How a track is loaded; the self-test puts its own in place of Lavalink and yt-dlp. */
+    private readonly load: typeof loadVia = loadVia
   ) {}
 
   get channelId() {
@@ -132,7 +150,17 @@ export class GuildMusic {
     return this.current ? Math.floor((this.player?.position ?? 0) / 1000) : 0;
   }
 
+  /** Whether `player` is the Lavalink player this object drives (and not one from before a /stop). */
+  owns(player: LavalinkPlayer) {
+    return this.player === player;
+  }
+
   async connect(channel: VoiceBasedChannel) {
+    // Right after a /stop, the previous player of this server may still be closing and
+    // Ditto still leaving the channel: wait for both (a few seconds at most), or the
+    // new player would be closed along with the old one.
+    await Promise.race([leaving.get(this.guild.id), new Promise((r) => setTimeout(r, 8000))]);
+    if (this.destroyed) throw new Error('player closed');
     const manager = lavalink();
     this.player ??=
       manager.getPlayer(this.guild.id) ??
@@ -166,19 +194,19 @@ export class GuildMusic {
   }
 
   /** Lavalink reports the end of a track (finished, stopped, or failed to load). */
-  onEnded(encoded: string | null) {
-    if (encoded && encoded !== this.currentEncoded) return; // a track we already moved on from
+  onEnded(play: number | null) {
+    if (play !== null && play !== this.playing) return; // a track we already moved on from
     void this.advance();
   }
 
   /** Lavalink reports that the playing track broke: try the next route before giving up. */
-  onFailed(encoded: string | null, message: string) {
-    if (!this.current || (encoded && encoded !== this.currentEncoded)) return;
+  onFailed(play: number | null, message: string) {
+    if (!this.current || (play !== null && play !== this.playing)) return;
     const track = this.current;
     const failed = this.routes[this.routeIndex];
     log.warn('music', `${this.guild.name}: ${track.title} failed via ${failed}: ${message}`);
     if (failed === 'direct') forgetDirect(track.url);
-    this.currentEncoded = null; // the end event of the broken track must not advance the queue
+    this.playing = null; // the end event of the broken track must not advance the queue
     this.routeIndex++;
     void this.start(track, new Error(message));
   }
@@ -195,7 +223,7 @@ export class GuildMusic {
         if (this.history.length > HISTORY) this.history.shift();
       }
     }
-    this.currentEncoded = null;
+    this.playing = null;
     this.skipVotes.clear();
     this.stopVotes.clear();
 
@@ -209,6 +237,7 @@ export class GuildMusic {
     if (!next) {
       this.current = null;
       this.hooks.onQueueEnd(this);
+      this.clearIdle();
       this.idleTimer = setTimeout(() => this.destroy(), IDLE_LEAVE_MS);
       return;
     }
@@ -222,14 +251,17 @@ export class GuildMusic {
       this.routes = routesFor(next);
       this.routeIndex = Math.max(0, this.routes.indexOf(ready.route));
       if (await this.playEncoded(next, ready.encoded)) return;
+      if (this.current !== next) return; // skipped in the meantime: the routes now belong to another track
       this.routeIndex++; // what was prepared no longer plays: carry on with the other routes
       return this.start(next);
     }
     try {
       await ensurePlayable(next);
     } catch (err) {
+      if (this.destroyed || this.current !== next) return;
       return this.giveUp(next, err as Error);
     }
+    if (this.destroyed || this.current !== next) return; // skipped while it was being matched
     this.routes = routesFor(next);
     this.routeIndex = 0;
     await this.start(next);
@@ -239,9 +271,10 @@ export class GuildMusic {
   private async playEncoded(track: Track, encoded: string) {
     if (!this.player || this.current !== track) return false;
     try {
-      this.currentEncoded = encoded;
+      const play = ++this.plays;
+      this.playing = play;
       this.lastEncoded = encoded;
-      await this.player.play({ track: { encoded, requester: track.requesterId }, volume: this.volume });
+      await this.player.play({ track: { encoded, requester: track.requesterId, userData: { [PLAY_TAG]: play } }, volume: this.volume });
       if (!this.announced) {
         this.announced = true;
         this.hooks.onTrackStart(this);
@@ -249,7 +282,7 @@ export class GuildMusic {
       this.prepareNext();
       return true;
     } catch {
-      this.currentEncoded = null;
+      this.playing = null;
       return false;
     }
   }
@@ -263,7 +296,7 @@ export class GuildMusic {
       await ensurePlayable(next);
       const route = routesFor(next).find((r) => r !== 'download');
       if (!route) return;
-      const { encoded } = await loadVia(route, next);
+      const { encoded } = await this.load(route, next);
       if (this.queue[0] === next) this.prepared = { track: next, route, encoded };
     })().catch(() => {});
   }
@@ -271,21 +304,28 @@ export class GuildMusic {
   /** Plays `track` from the current route onwards. */
   private async start(track: Track, lastError?: Error) {
     let error = lastError;
-    for (; this.routeIndex < this.routes.length; this.routeIndex++) {
-      if (this.destroyed || this.current !== track) return;
+    // A track skipped or stopped while one of its routes was loading leaves at once,
+    // without touching the routes (they now belong to the track that replaced it) and
+    // without being given up on, which would take that other track down with it.
+    const gone = () => this.destroyed || this.current !== track;
+    while (this.routeIndex < this.routes.length) {
+      if (gone()) return;
       const route = this.routes[this.routeIndex];
       try {
-        const { encoded, file } = await loadVia(route, track);
+        const { encoded, file } = await this.load(route, track);
+        if (gone() || !this.player) return;
         this.dropTempFile();
         this.tempFile = file ?? null;
-        if (!this.player || this.current !== track) return;
         if (await this.playEncoded(track, encoded)) return;
         throw new Error('Lavalink refused to play it');
       } catch (err) {
+        if (gone()) return;
         error = err as Error;
         log.warn('music', `${this.guild.name}: ${track.title} could not load via ${route}: ${error.message}`);
+        this.routeIndex++;
       }
     }
+    if (gone()) return;
     this.giveUp(track, error ?? new Error('no route'));
   }
 
@@ -307,7 +347,7 @@ export class GuildMusic {
       this.history.push(this.current);
       this.current = null;
     }
-    if (this.currentEncoded) void this.player?.stopPlaying(false, false).catch(() => {});
+    if (this.playing !== null) void this.player?.stopPlaying(false, false).catch(() => {});
     else void this.advance(); // still loading: move on directly
   }
 
@@ -323,8 +363,8 @@ export class GuildMusic {
     this.current = null; // advance() must not push it to the history again
     this.queue.unshift(last);
     this.prepared = null;
-    if (this.currentEncoded) {
-      this.currentEncoded = null;
+    if (this.playing !== null) {
+      this.playing = null;
       await this.player?.stopPlaying(false, false).catch(() => {});
     }
     await this.advance();
@@ -340,6 +380,7 @@ export class GuildMusic {
   }
 
   setVolume(level: number) {
+    if (!Number.isFinite(level)) return;
     this.volume = Math.max(0, Math.min(100, Math.round(level)));
     void this.player?.setVolume(this.volume).catch(() => {});
   }
@@ -397,10 +438,21 @@ export class GuildMusic {
     if (this.emptyTimer) clearTimeout(this.emptyTimer);
     this.queue.length = 0;
     this.current = null;
-    this.currentEncoded = null;
+    this.playing = null;
     this.dropTempFile();
-    if (!fromLavalink) void this.player?.destroy('stopped').catch(() => {});
+    const player = this.player;
     this.player = null;
+    if (player && !fromLavalink) {
+      const id = this.guild.id;
+      const gone: Promise<unknown> = player
+        .destroy('stopped')
+        .catch(() => {})
+        .then(() => outOfVoice(this.guild))
+        .finally(() => {
+          if (leaving.get(id) === gone) leaving.delete(id);
+        });
+      leaving.set(id, gone);
+    }
     this.hooks.onDestroy(this);
   }
 }

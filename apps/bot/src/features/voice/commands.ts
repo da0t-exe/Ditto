@@ -111,6 +111,7 @@ const gather: Command = {
     await i.deferReply();
     const origins = new Map(targets.map((m) => [m.id, m.voice.channelId!]));
     const moved = await moveAll(targets, to);
+    for (const [id, run] of gatherRuns) if (run.expires < Date.now()) gatherRuns.delete(id);
     gatherRuns.set(i.id, { origins, to: to.id, expires: Date.now() + 3 * 3600_000 });
 
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(

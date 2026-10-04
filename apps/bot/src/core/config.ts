@@ -51,13 +51,38 @@ export function hasConfig(guildId: string) {
   return cache.has(guildId) || !!selectStmt.get(guildId);
 }
 
+/**
+ * What was saved, kept only where it still fits: settings from older versions that no
+ * longer exist are dropped, and a value of the wrong kind gives way to the default.
+ */
+function restore(data: string | undefined): Partial<GuildConfig> {
+  let saved: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = data ? JSON.parse(data) : {};
+    if (parsed && typeof parsed === 'object') saved = parsed as Record<string, unknown>;
+  } catch {
+    log.warn('config', 'saved settings could not be read: starting from the defaults');
+  }
+  const out: Record<string, unknown> = {};
+  for (const key of KEYS) {
+    const value = saved[key];
+    const model = DEFAULTS[key];
+    if (Array.isArray(model)) {
+      if (Array.isArray(value)) out[key] = value.filter((v) => typeof v === 'string');
+    } else if (typeof model === 'number') {
+      if (typeof value === 'number' && Number.isFinite(value) && value > 0) out[key] = value;
+    } else if (typeof model === 'boolean') {
+      if (typeof value === 'boolean') out[key] = value;
+    } else if (typeof value === 'string' || value === null) out[key] = value;
+  }
+  return out as Partial<GuildConfig>;
+}
+
 export function getConfig(guildId: string): GuildConfig {
   let cfg = cache.get(guildId);
   if (!cfg) {
-    const row = selectStmt.get(guildId);
-    const saved = row ? (JSON.parse(row.data) as Partial<GuildConfig>) : {};
-    // Settings from older versions that no longer exist are dropped.
-    cfg = { ...DEFAULTS, ...Object.fromEntries(Object.entries(saved).filter(([k]) => KEYS.includes(k as keyof GuildConfig))) };
+    // A copy of the defaults: their lists must not be shared between servers.
+    cfg = { ...structuredClone(DEFAULTS), ...restore(selectStmt.get(guildId)?.data) };
     cache.set(guildId, cfg);
   }
   return cfg;
